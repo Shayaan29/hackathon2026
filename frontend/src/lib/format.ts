@@ -16,7 +16,9 @@ export function relSeconds(value: number): string {
   if (Math.abs(value) < 0.5) return "now";
   const sign = value < 0 ? "−" : "+";
   const abs = Math.abs(value);
-  if (abs >= 120) return `${sign}${Math.round(abs / 60)} min`;
+  if (abs >= 3600 && abs % 3600 === 0) return `${sign}${abs / 3600} h`;
+  if (abs >= 60 && abs % 60 === 0) return `${sign}${abs / 60} min`;
+  if (abs >= 120) return `${sign}${(abs / 60).toFixed(1)} min`;
   return `${sign}${Math.round(abs)} s`;
 }
 

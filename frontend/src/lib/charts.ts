@@ -1,6 +1,8 @@
 // ECharts setup and the option builders for the four chart views.
-import { LineChart } from "echarts/charts";
+import { BarChart, BoxplotChart, EffectScatterChart, LineChart, ScatterChart } from "echarts/charts";
 import {
+  DataZoomInsideComponent,
+  DataZoomSliderComponent,
   GridComponent,
   LegendComponent,
   MarkAreaComponent,
@@ -10,11 +12,20 @@ import {
 } from "echarts/components";
 import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
-import type { CockpitEvent, DriftData, HistoryData, Series, Severity, SpectrumData, Tolerance } from "../types";
+import type {
+  Anchor, BarData, BoxplotData, CockpitEvent, DriftData, HistogramData, HistoryData, InsightStep, RangeData,
+  ScatterData, Series, Severity, SpectrumData, Tolerance, ViewData,
+} from "../types";
 import { KIND_LABEL, relSeconds } from "./format";
 
 echarts.use([
   LineChart,
+  BarChart,
+  BoxplotChart,
+  ScatterChart,
+  EffectScatterChart,
+  DataZoomInsideComponent,
+  DataZoomSliderComponent,
   GridComponent,
   LegendComponent,
   MarkAreaComponent,
@@ -150,14 +161,38 @@ function toleranceMarks(tolerance: Tolerance, unit: string): Record<string, unkn
   ];
 }
 
-function eventAreas(events: CockpitEvent[], tNow: number, withLabel: boolean): Record<string, unknown> {
+/** Which of a sorted list of times get a label, so labels never pile up. */
+function spacedOut(times: number[], t0: number, t1: number, minShare = 0.08, newestFirst = false): boolean[] {
+  const span = Math.max(t1 - t0, 1e-9);
+  const order = times.map((_, i) => i);
+  if (newestFirst) order.reverse();
+  const show = times.map(() => false);
+  let last: number | null = null;
+  for (const i of order) {
+    const f = (times[i] - t0) / span;
+    if (f < -0.02 || f > 1.02 || (last !== null && Math.abs(f - last) < minShare)) continue;
+    show[i] = true;
+    last = f;
+  }
+  return show;
+}
+
+/** A tick every whole second, minute or hour, so a 5-minute axis reads −5 min … now. */
+function tickStep(windowS: number): number {
+  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200];
+  return steps.find((step) => windowS / step <= 7) ?? 7200;
+}
+
+function eventAreas(events: CockpitEvent[], tNow: number, windowS: number): Record<string, unknown> {
+  const sorted = [...events].sort((a, b) => a.t - b.t);
+  const show = spacedOut(sorted.map((e) => e.t), tNow - windowS, tNow, 0.1, true);
   return {
     silent: true,
-    data: events.map((e) => [
+    data: sorted.map((e, i) => [
       {
         xAxis: e.t - tNow - 1.2,
         itemStyle: { color: SEVERITY_FILL[e.severity] },
-        label: withLabel
+        label: show[i]
           ? { show: true, position: "insideTop", color: COLORS.amber, fontSize: 10, formatter: KIND_LABEL[e.kind] }
           : { show: false },
       },
@@ -226,6 +261,7 @@ export function historyOption(data: HistoryData): ChartOption {
       gridIndex: index,
       min: -data.window_s,
       max: 0,
+      interval: tickStep(data.window_s),
       axisLine: { lineStyle: { color: COLORS.axis } },
       axisTick: { show: false },
       splitLine: { show: false },
@@ -255,7 +291,7 @@ export function historyOption(data: HistoryData): ChartOption {
     const mine = data.events.filter(
       (e) => e.kind !== "drift" && (e.sensor === s.sensor || e.related_sensors.includes(s.sensor)),
     );
-    const extras: Record<string, unknown> = { markArea: eventAreas(mine, data.t_now, true) };
+    const extras: Record<string, unknown> = { markArea: eventAreas(mine, data.t_now, data.window_s) };
     if (nearLimit) {
       extras.markLine = {
         silent: true,
@@ -418,4 +454,372 @@ export function driftOption(data: DriftData): ChartOption {
       },
     ],
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Charts the copilot picks
+// ---------------------------------------------------------------------------
+
+function plainTooltip(): Record<string, unknown> {
+  return {
+    trigger: "item",
+    backgroundColor: THEME.tipBg,
+    borderColor: THEME.tipBorder,
+    textStyle: { color: THEME.tipText, fontFamily: FONT, fontSize: 13 },
+  };
+}
+
+/** How readings are spread: a stepped area per sensor on a value axis. */
+export function histogramOption(data: HistogramData): ChartOption {
+  const unit = data.series[0]?.unit ?? "";
+  const series = data.series.map((s, i) => {
+    const color = COLORS.series[i % COLORS.series.length];
+    const centres = s.counts.map((c, k) => [(s.edges[k] + s.edges[k + 1]) / 2, c]);
+    // the tolerance limits, when the readings come anywhere near them
+    const lo = s.edges[0];
+    const hi = s.edges[s.edges.length - 1];
+    const limits = i === 0 ? [s.tolerance.low, s.tolerance.high].filter((v) => v >= lo && v <= hi) : [];
+    return {
+      type: "line", name: s.name, step: "middle", showSymbol: false, data: centres,
+      lineStyle: { color, width: 1.6 }, itemStyle: { color },
+      areaStyle: { color: hexToRgba(color, data.series.length > 1 ? 0.18 : 0.28) },
+      emphasis: { disabled: true },
+      ...(limits.length ? { markLine: {
+        symbol: "none", silent: true, animation: false,
+        lineStyle: { color: COLORS.red, type: "dashed", width: 1.2 },
+        label: { color: COLORS.red, fontSize: 10, position: "insideEndTop",
+          formatter: (p: { value: number }) => `tol ${p.value > 0 ? "+" : ""}${p.value} ${unit}` },
+        data: limits.map((v) => ({ xAxis: v })),
+      } } : {}),
+    };
+  });
+  return {
+    ...base(unit),
+    tooltip: { ...plainTooltip(), trigger: "axis" },
+    legend: data.series.length > 1 ? { top: 0, right: 8, textStyle: { color: COLORS.text } } : undefined,
+    grid: { left: 64, right: 26, top: 30, bottom: 38 },
+    xAxis: valueAxis({ scale: true, name: unit, nameLocation: "end", nameTextStyle: { color: COLORS.dim },
+      splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: COLORS.axis } } }),
+    yAxis: valueAxis({ name: "readings", nameTextStyle: { color: COLORS.dim } }),
+    series,
+  };
+}
+
+export function boxplotOption(data: BoxplotData): ChartOption {
+  return {
+    ...base(data.unit),
+    tooltip: {
+      ...plainTooltip(),
+      formatter: (p: { name: string; value: number[] }) => {
+        const [, lo, q1, med, q3, hi] = p.value;
+        return `${p.name}<br/>median ${signed(med, 2)} ${data.unit}<br/>middle half ${signed(q1, 2)} to ${signed(q3, 2)}`
+          + `<br/>98% within ${signed(lo, 2)} to ${signed(hi, 2)}`;
+      },
+    },
+    grid: { left: 64, right: 26, top: 24, bottom: 40 },
+    xAxis: { type: "category", data: data.categories, axisLine: { lineStyle: { color: COLORS.axis } },
+      axisTick: { show: false }, axisLabel: { color: COLORS.dim, fontSize: 12 } },
+    yAxis: valueAxis({ scale: true, name: data.unit, nameTextStyle: { color: COLORS.dim } }),
+    series: [{
+      type: "boxplot", name: "spread", data: data.boxes, boxWidth: [8, 42],
+      itemStyle: { color: hexToRgba(COLORS.cyan, 0.16), borderColor: COLORS.cyan, borderWidth: 1.6 },
+      emphasis: { disabled: true },
+    }],
+  };
+}
+
+export function scatterOption(data: ScatterData): ChartOption {
+  return {
+    ...base(data.x.unit),
+    tooltip: { show: false },
+    grid: { left: 70, right: 30, top: 24, bottom: 46 },
+    xAxis: valueAxis({ scale: true, name: `${data.x.name} (${data.x.unit})`, nameLocation: "middle", nameGap: 28,
+      nameTextStyle: { color: COLORS.text, fontSize: 13 } }),
+    yAxis: valueAxis({ scale: true, name: `${data.y.name} (${data.y.unit})`, nameLocation: "middle", nameGap: 48,
+      nameTextStyle: { color: COLORS.text, fontSize: 13 } }),
+    series: [
+      { type: "scatter", name: "readings", data: data.points, symbolSize: 4, large: true,
+        itemStyle: { color: hexToRgba(COLORS.cyan, data.highlight ? 0.22 : 0.38) }, emphasis: { disabled: true } },
+      ...(data.highlight ? [{ type: "scatter", name: "knock", data: data.highlight.points, symbolSize: 5, z: 5,
+        itemStyle: { color: hexToRgba(COLORS.amber, 0.85) }, emphasis: { disabled: true } }] : []),
+    ],
+  };
+}
+
+export function barOption(data: BarData): ChartOption {
+  const digits = data.metric === "events" ? 0 : 2;
+  return {
+    ...base(data.unit),
+    tooltip: { show: false },
+    grid: { left: 64, right: 26, top: 34, bottom: 40 },
+    xAxis: { type: "category", data: data.categories, axisLine: { lineStyle: { color: COLORS.axis } },
+      axisTick: { show: false }, axisLabel: { color: COLORS.text, fontSize: 13 } },
+    yAxis: valueAxis({ name: data.unit, nameTextStyle: { color: COLORS.dim } }),
+    series: [{
+      type: "bar", name: data.label, barMaxWidth: 90,
+      data: data.values.map((v, i) => ({ value: v, itemStyle: { color: COLORS.series[i % COLORS.series.length],
+        borderRadius: [6, 6, 0, 0] } })),
+      label: { show: true, position: "top", color: COLORS.text, fontFamily: FONT, fontSize: 15, fontWeight: 600,
+        formatter: (p: { value: number }) => `${p.value.toFixed(digits)}${data.unit ? ` ${data.unit}` : ""}` },
+      emphasis: { disabled: true },
+    }],
+  };
+}
+
+function signed(v: number | null | undefined, digits: number): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "–";
+  return `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(digits)}`;
+}
+
+// ---------------------------------------------------------------------------
+// The shift timeline (zoomable from hours down to single readings)
+// ---------------------------------------------------------------------------
+
+const KIND_SHORT: Record<string, string> = {
+  vibration: "knock", noise: "noise", drift: "drift", out_of_range: "out of tol.", invalid: "no signal",
+};
+
+/** time in ms, average, lowest, highest */
+export type ShiftPoint = [number, number | null, number | null, number | null];
+
+/** The alert lines on the shift timeline; only labels that have room are shown. */
+export function shiftEventMarks(data: RangeData, t0: number, t1: number): Record<string, unknown>[] {
+  const events = [...data.events].sort((a, b) => a.t - b.t);
+  const show = spacedOut(events.map((e) => e.t), t0, t1);
+  return events.map((e, i) => {
+    const color = e.severity === "critical" ? COLORS.red : COLORS.amber;
+    return {
+      xAxis: e.t * 1000,
+      lineStyle: { color, width: 1.2, type: "dashed" },
+      label: { show: show[i], formatter: KIND_SHORT[e.kind] ?? e.kind, color, fontFamily: FONT, fontSize: 11,
+        position: "insideEndTop" },
+      value: e.id,
+    };
+  });
+}
+
+/** Series data for the shift timeline: the line, then the band as low + spread. */
+export function shiftSeriesData(points: ShiftPoint[]): [number, number | null][][] {
+  return [
+    points.map((p) => [p[0], p[1]]),
+    points.map((p) => [p[0], p[2]]),
+    points.map((p) => [p[0], p[2] === null || p[3] === null ? null : p[3] - p[2]]),
+  ];
+}
+
+export function shiftOption(data: RangeData, points: ShiftPoint[], window?: [number, number]): ChartOption {
+  const color = COLORS.cyan;
+  const [line, low, spread] = shiftSeriesData(points);
+  const [w0, w1] = window ?? [data.t0, data.t1];
+  const band = { type: "line", showSymbol: false, silent: true, connectNulls: false, stack: "band",
+    stackStrategy: "all", lineStyle: { opacity: 0 }, emphasis: { disabled: true }, animation: false };
+  return {
+    ...base(data.unit),
+    animation: false,
+    tooltip: { ...plainTooltip(), trigger: "axis",
+      formatter: (params: { seriesName: string; value: [number, number | null] }[]) => {
+        const find = (name: string) => params.find((x) => x.seriesName === name)?.value[1] ?? null;
+        const p = params.find((x) => x.seriesName === "reading");
+        const v = find("reading");
+        if (!p || v === null) return "";
+        const d = new Date(p.value[0]);
+        const ms = String(d.getMilliseconds()).padStart(3, "0");
+        const lo = find(`${HIDDEN}low`);
+        const sp = find(`${HIDDEN}spread`);
+        const range = lo !== null && sp !== null && sp > 0.005
+          ? `<br/>lowest ${signed(lo, 2)}, highest ${signed(lo + sp, 2)}` : "";
+        return `${d.toLocaleTimeString()}.${ms}<br/><b>${signed(v, 2)} ${data.unit}</b>${range}`;
+      } },
+    grid: { left: 64, right: 24, top: 26, bottom: 64 },
+    xAxis: { type: "time", axisLine: { lineStyle: { color: COLORS.axis } }, splitLine: { show: false },
+      axisLabel: { color: COLORS.dim, fontSize: 11, hideOverlap: true } },
+    yAxis: valueAxis({ scale: true, name: data.unit, nameTextStyle: { color: COLORS.dim } }),
+    dataZoom: [
+      { type: "inside", xAxisIndex: 0, filterMode: "weakFilter", zoomOnMouseWheel: true, moveOnMouseMove: true,
+        minValueSpan: 40 },
+      { type: "slider", xAxisIndex: 0, filterMode: "weakFilter", height: 22, bottom: 10, borderColor: COLORS.axis,
+        fillerColor: hexToRgba(color, 0.15), handleStyle: { color }, moveHandleStyle: { color },
+        dataBackground: { lineStyle: { color: COLORS.dim, width: 0.6 }, areaStyle: { color: hexToRgba(color, 0.08) } },
+        textStyle: { color: COLORS.dim, fontSize: 10 }, labelFormatter: "" },
+    ],
+    series: [
+      {
+        type: "line", name: "reading", data: line, showSymbol: false, connectNulls: false, sampling: undefined, z: 3,
+        lineStyle: { color, width: 1.2 }, itemStyle: { color }, emphasis: { disabled: true },
+        markLine: { silent: false, symbol: "none", data: shiftEventMarks(data, w0, w1), animation: false },
+      },
+      // thin edges keep a one-slice spike (a knock in the eight-hour view) visible
+      { ...band, name: `${HIDDEN}low`, data: low, lineStyle: { color: hexToRgba(color, 0.5), width: 0.8 } },
+      { ...band, name: `${HIDDEN}spread`, data: spread, lineStyle: { color: hexToRgba(color, 0.5), width: 0.8 },
+        areaStyle: { color: hexToRgba(color, 0.2) } },
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Annotations: what the copilot points at while it explains a chart
+// ---------------------------------------------------------------------------
+
+type Mark = Record<string, unknown>;
+
+function stepLabel(n: number, text: string | undefined, active: boolean): Record<string, unknown> {
+  return {
+    show: true,
+    formatter: text ? `{n|${n}} {t|${text}}` : `{n|${n}}`,
+    rich: {
+      n: { backgroundColor: active ? COLORS.cyan : COLORS.dim, color: "#fff", borderRadius: 10, width: 20, height: 20,
+        align: "center", fontFamily: FONT, fontSize: 12, fontWeight: 700 },
+      t: { color: active ? THEME.tipText : COLORS.dim, backgroundColor: THEME.labelBg, padding: [3, 6], borderRadius: 4,
+        fontFamily: FONT, fontSize: 13, fontWeight: active ? 600 : 400 },
+    },
+  };
+}
+
+/** Which grid an anchor belongs to (compare charts stack one grid per sensor). */
+function gridsFor(view: ViewData, anchor: Anchor): number[] {
+  if (view.view !== "compare") return [0];
+  const ids = (view as HistoryData).series.map((s) => s.sensor);
+  if (anchor.sensor && ids.includes(anchor.sensor)) return [ids.indexOf(anchor.sensor)];
+  return ids.map((_, i) => i);
+}
+
+/** Anchor x in the chart's own units. */
+function xOf(view: ViewData, anchor: Anchor, key: "t" | "t0" | "t1" = "t"): number | undefined {
+  const xKey = key === "t" ? "x" : key === "t0" ? "x0" : "x1";
+  if (anchor[key] !== undefined && "t_now" in view && (view.view === "timeseries" || view.view === "compare")) {
+    return (anchor[key] as number) - (view as HistoryData).t_now;
+  }
+  return anchor[xKey] ?? (anchor[key] as number | undefined);
+}
+
+/** The x axis range of a view, where it is known before drawing. */
+function xRange(view: ViewData): [number, number] | null {
+  switch (view.view) {
+    case "timeseries":
+    case "compare":
+      return [-(view as HistoryData).window_s, 0];
+    case "histogram": {
+      const edges = (view as HistogramData).series.flatMap((s) => [s.edges[0], s.edges[s.edges.length - 1]]);
+      return edges.length ? [Math.min(...edges), Math.max(...edges)] : null;
+    }
+    case "spectrum": {
+      const f = (view as SpectrumData).freqs.filter((v): v is number => v !== null);
+      return f.length ? [f[0], f[f.length - 1]] : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** True when a label starting at x would run off the right edge, so it goes to the left instead. */
+function nearRight(view: ViewData, x: number): boolean {
+  const r = xRange(view);
+  return !!r && r[1] > r[0] && (x - r[0]) / (r[1] - r[0]) > 0.72;
+}
+
+/** Adds the explanation marks for the steps shown so far; the newest one is highlighted. */
+export function withAnnotations(option: ChartOption, view: ViewData, steps: InsightStep[]): ChartOption {
+  if (!steps.length) return option;
+  const perGrid = new Map<number, { lines: (Mark | Mark[])[]; areas: Mark[][]; points: Mark[] }>();
+  const ripples: { grid: number; value: [number | string, number]; active: boolean }[] = [];
+  const bucket = (g: number) => {
+    if (!perGrid.has(g)) perGrid.set(g, { lines: [], areas: [], points: [] });
+    return perGrid.get(g)!;
+  };
+  const categories: string[] = view.view === "boxplot" || view.view === "bar"
+    ? (view as BoxplotData | BarData).categories : [];
+
+  steps.forEach((step, i) => {
+    const a = step.anchor;
+    if (!a || a.type === "zoom") return;
+    const n = i + 1;
+    const active = i === steps.length - 1;
+    const color = active ? COLORS.cyan : COLORS.dim;
+    for (const g of gridsFor(view, a)) {
+      const b = bucket(g);
+      switch (a.type) {
+        case "x": {
+          const x = xOf(view, a);
+          if (x === undefined) break;
+          b.lines.push({ xAxis: x, lineStyle: { color, width: active ? 2.4 : 1.4, type: "solid" },
+            label: { show: false } });
+          // a line label cannot be moved down reliably, so the label sits on a zero-width area
+          const left = nearRight(view, x);
+          b.areas.push([{ xAxis: x, itemStyle: { color: "transparent" },
+            label: { ...stepLabel(n, a.label, active), position: left ? "insideTopRight" : "insideTopLeft",
+              offset: [left ? -2 : 2, (n - 1) * 24] } },
+          { xAxis: x }]);
+          break;
+        }
+        case "point": {
+          const x = xOf(view, a);
+          if (x === undefined || a.y === undefined) break;
+          b.points.push({ coord: [x, a.y], symbol: "circle", symbolSize: active ? 14 : 9,
+            itemStyle: { color, borderColor: "#fff", borderWidth: 2 },
+            label: { ...stepLabel(n, a.label, active), position: "top", distance: 10 } });
+          if (active) ripples.push({ grid: g, value: [x, a.y], active });
+          break;
+        }
+        case "xspan": {
+          const x0 = xOf(view, a, "t0");
+          const x1 = xOf(view, a, "t1");
+          if (x0 === undefined || x1 === undefined) break;
+          b.areas.push([{ xAxis: x0, itemStyle: { color: hexToRgba(color, active ? 0.16 : 0.07) },
+            label: { ...stepLabel(n, a.label, active), position: nearRight(view, x0) ? "insideTopRight" : "insideTopLeft",
+              offset: [nearRight(view, x0) ? -2 : 2, (n - 1) * 24] } },
+          { xAxis: x1 }]);
+          break;
+        }
+        case "yspan":
+          if (a.y0 === undefined || a.y1 === undefined) break;
+          b.areas.push([{ yAxis: a.y0, itemStyle: { color: hexToRgba(color, active ? 0.16 : 0.07) },
+            label: { ...stepLabel(n, a.label, active), position: "insideTopLeft", offset: [(n - 1) * 30, 0] } },
+          { yAxis: a.y1 }]);
+          break;
+        case "grid": {
+          const w = "window_s" in view ? (view as HistoryData).window_s : 0;
+          b.areas.push([{ xAxis: -w, itemStyle: { color: hexToRgba(color, active ? 0.12 : 0.05) },
+            label: { ...stepLabel(n, a.label, active), position: "insideTopRight" } }, { xAxis: 0 }]);
+          break;
+        }
+        case "category": {
+          const name = a.index !== undefined ? categories[a.index] : undefined;
+          if (name === undefined) break;
+          b.areas.push([{ xAxis: name, itemStyle: { color: hexToRgba(color, active ? 0.18 : 0.07) },
+            label: { ...stepLabel(n, a.label, active), position: "insideTop" } }, { xAxis: name }]);
+          break;
+        }
+        case "line":
+          if (a.x0 === undefined || a.x1 === undefined || a.y0 === undefined || a.y1 === undefined) break;
+          b.lines.push([{ coord: [a.x0, a.y0], lineStyle: { color, width: active ? 3 : 1.6, type: "solid" },
+            label: { show: false } }, { coord: [a.x1, a.y1] }]);
+          // label just inside the end of the line, on the side the line leaves free
+          b.points.push({ coord: [a.x0 + 0.96 * (a.x1 - a.x0), a.y0 + 0.96 * (a.y1 - a.y0)], symbol: "circle",
+            symbolSize: 1, itemStyle: { color: "transparent" },
+            label: { ...stepLabel(n, a.label, active), position: a.y1 >= a.y0 ? "top" : "bottom", align: "right",
+              distance: 8 } });
+          break;
+      }
+    }
+  });
+
+  const extra: Record<string, unknown>[] = [];
+  perGrid.forEach((b, g) => {
+    extra.push({
+      type: "line", name: `${HIDDEN}notes`, data: [], xAxisIndex: g, yAxisIndex: g, silent: true, z: 20,
+      markLine: { symbol: "none", silent: true, animationDuration: 500, data: b.lines },
+      markArea: { silent: true, animationDuration: 500, data: b.areas },
+      markPoint: { silent: true, animationDuration: 500, data: b.points },
+    });
+  });
+  for (const r of ripples) {
+    extra.push({
+      type: "effectScatter", name: `${HIDDEN}pulse`, xAxisIndex: r.grid, yAxisIndex: r.grid, data: [r.value],
+      symbolSize: 16, z: 21, silent: true, itemStyle: { color: COLORS.cyan },
+      rippleEffect: { brushType: "stroke", scale: 3.2, period: 1.6 },
+    });
+  }
+  const series = Array.isArray(option.series) ? option.series : option.series ? [option.series] : [];
+  return { ...option, series: [...(series as Record<string, unknown>[]), ...extra] };
 }

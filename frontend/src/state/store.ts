@@ -5,15 +5,26 @@ import type {
   ChartSpec,
   CockpitConfig,
   CockpitEvent,
+  InsightStep,
   StatusMessage,
   VoiceActivity,
   VoiceMode,
 } from "../types";
 
+export interface PanelTour {
+  steps: InsightStep[];
+  /** how many steps are highlighted so far */
+  shown: number;
+}
+
 export interface StagePanel {
   id: string;
   spec: ChartSpec;
   leaving?: "forward" | "dust";
+  /** an explanation being walked through on this chart */
+  tour?: PanelTour;
+  /** the shift timeline flies to this window; seq changes on every request */
+  focus?: { t0: number; t1: number; seq: number };
 }
 
 export interface Caption {
@@ -88,6 +99,8 @@ interface CockpitStore {
   pushPanel: (spec: ChartSpec) => StagePanel;
   markLeaving: (id: string, mode: "forward" | "dust") => void;
   removePanel: (id: string) => void;
+  setTour: (id: string, tour: PanelTour | undefined) => void;
+  setFocus: (id: string, t0: number, t1: number) => void;
 }
 
 let nextId = 1;
@@ -178,4 +191,7 @@ export const useStore = create<CockpitStore>((set, get) => ({
     set((s) => ({ stage: s.stage.map((p) => (p.id === id ? { ...p, leaving: mode } : p)) })),
 
   removePanel: (id) => set((s) => ({ stage: s.stage.filter((p) => p.id !== id) })),
+  setTour: (id, tour) => set((s) => ({ stage: s.stage.map((p) => (p.id === id ? { ...p, tour } : p)) })),
+  setFocus: (id, t0, t1) =>
+    set((s) => ({ stage: s.stage.map((p) => (p.id === id ? { ...p, focus: { t0, t1, seq: nextId++ } } : p)) })),
 }));

@@ -92,7 +92,7 @@ def analyze(engine: Engine, sensor: str, window_s: float = 60.0) -> dict[str, An
     vib = engine.last_event("vibration", sid)
     if vib is not None and vib.t >= now - window_s:
         _, _, burst = buf.fast_range(vib.t - 1.0, vib.t + 1.0)
-        peak = spectral_peak(burst, engine.rate_hz, fmin=3.0, fmax=100.0)
+        peak = spectral_peak(burst, engine.rate_hz, fmin=engine.settings.detection.vibration_min_hz, fmax=100.0)
         ok = burst[np.isfinite(burst)]
         peak_dev = float(np.max(np.abs(ok - np.median(ok)))) if ok.size else None
         others = vib.related_sensors if vib.sensor == sid else [vib.sensor] + [
@@ -112,7 +112,7 @@ def analyze(engine: Engine, sensor: str, window_s: float = 60.0) -> dict[str, An
             past.append(f"The same vibration appeared on {names} at the same moment.")
     else:
         _, _, window = buf.fast_window(min(window_s, 4.0))
-        peak = spectral_peak(window, engine.rate_hz, fmin=3.0, fmax=100.0)
+        peak = spectral_peak(window, engine.rate_hz, fmin=engine.settings.detection.vibration_min_hz, fmax=100.0)
         if peak and peak["prominence"] >= 8.0:
             result["dominant_frequency_hz"] = round(peak["frequency_hz"], 1)
 

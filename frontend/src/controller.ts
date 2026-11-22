@@ -10,11 +10,22 @@ import { alarm, blip, chime, confirmSound, dissolveSound, setSoundEnabled, unloc
 import { PushToTalkRecognizer, recognitionAvailable, speak, stopSpeaking } from "./lib/speech";
 import { RealtimeVoice } from "./lib/voice";
 import { useStore } from "./state/store";
-import type { ChartSpec, ChartView, CockpitEvent, ServerMessage, SpectrumData, DriftData } from "./types";
+import type {
+  ChartSpec, ChartView, CockpitEvent, ExploreChart, InsightStep, ServerMessage, SpectrumData, DriftData, ViewData,
+} from "./types";
 
 type StageApi = { dissolveFront: () => boolean };
 
 const VIEWS: ChartView[] = ["timeseries", "compare", "spectrum", "drift"];
+const EXPLORE: ExploreChart[] = ["histogram", "boxplot", "scatter", "bar"];
+
+/** A chart explanation in progress: which panel, its steps, and how speech is driving it. */
+interface Tour {
+  panelId: string;
+  steps: InsightStep[];
+  mode: "ai" | "browser";
+  ended: boolean;
+}
 const store = () => useStore.getState();
 
 class Controller {
@@ -23,6 +34,10 @@ class Controller {
   private recognizer: PushToTalkRecognizer | null = null;
   private stageApi: StageApi | null = null;
   private lastSensor: string | undefined;
+  /** latest data of each chart panel, so explanations can use what is on screen */
+  private panelData = new Map<string, ViewData>();
+  private tour: Tour | null = null;
+  private tourTimer = 0;
   private pttActive = false;
   private alertTimer = 0;
   private started = false;
@@ -50,6 +65,154 @@ class Controller {
     window.setTimeout(() => void this.refreshHints(), 3000);
   }
 
+  // -- charts the copilot builds, explanations, the shift timeline -------
+
+  rememberPanelData(panelId: string, data: ViewData): void {
+    this.panelData.set(panelId, data);
+    if (this.panelData.size > 20) this.panelData.delete(this.panelData.keys().next().value as string);
+  }
+
+  /** Shows a histogram, box plot, X-Y or bar chart and returns its findings. */
+  async makeChart(spec: ChartSpec, speakFinding = false): Promise<Record<string, unknown>> {
+    const sensors = spec.sensors.length ? spec.sensors : [this.lastSensor ?? this.firstSensor()];
+    const clean: ChartSpec = { ...spec, sensors };
+    try {
+      const data = await api.explore(clean);
+      this.show(clean);
+      const findings = data.insights.map((s) => s.text);
+      if (speakFinding && findings[0]) this.say(findings[0]);
+      return { ok: true, chart: clean.view, findings };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Opens the shift timeline, or flies the open one to an incident. */
+  async showShift(sensor?: string, eventId?: string): Promise<Record<string, unknown>> {
+    let sid = sensor ?? this.lastSensor ?? this.firstSensor();
+    // only a jump to one incident needs the data first: it may belong to another sensor
+    let shift = eventId ? await api.shift(sid).catch(() => null) : null;
+    if (eventId && shift && !shift.events.some((e) => e.id === eventId)) {
+      // the incident belongs to another sensor: show that sensor's timeline instead
+      for (const other of (store().config?.sensors ?? []).map((s) => s.id)) {
+        if (other === sid) continue;
+        const candidate = await api.shift(other).catch(() => null);
+        if (candidate?.events.some((e) => e.id === eventId)) {
+          sid = other;
+          shift = candidate;
+          break;
+        }
+      }
+    }
+    const front = store().stage.find((p) => !p.leaving);
+    if (front?.spec.view === "shift" && front.spec.sensors[0] === sid && eventId) {
+      const data = this.panelData.get(front.id);
+      const event = data && "events" in data ? data.events.find((e) => e.id === eventId) : undefined;
+      if (event) {
+        const around: Record<string, [number, number]> = {
+          vibration: [0.4, 1.6], drift: [600, 900], noise: [120, 600], invalid: [20, 45], out_of_range: [3, 9],
+        };
+        const [before, after] = around[event.kind] ?? [30, 60];
+        store().setFocus(front.id, event.t - before, event.t + after);
+        return { ok: true, zoomed_to: event.summary };
+      }
+    }
+    this.show({ view: "shift", sensors: [sid], event_id: eventId });
+    shift = shift ?? await api.shift(sid).catch(() => null);
+    return shift
+      ? { ok: true, incidents: shift.events.map((e) => ({ id: e.id, kind: e.kind, summary: e.summary })).slice(-12),
+          overview: shift.insights[0]?.text }
+      : { ok: true };
+  }
+
+  /** Walks through the chart in front: each step is highlighted while it is spoken. */
+  async explainChart(): Promise<{ ok: boolean; steps?: string[]; error?: string }> {
+    const front = store().stage.find((p) => !p.leaving);
+    if (!front) return { ok: false, error: "There is no chart on screen." };
+    let steps: InsightStep[] | undefined;
+    const data = this.panelData.get(front.id);
+    if (data && "insights" in data && Array.isArray(data.insights)) steps = data.insights;
+    if (!steps && VIEWS.includes(front.spec.view)) {
+      try {
+        steps = (await api.insights(front.spec)).insights;
+      } catch {
+        steps = undefined;
+      }
+    }
+    if (!steps?.length) return { ok: false, error: "There is nothing to explain on this chart yet." };
+    this.endTour();
+    const mode = this.voice?.connected ? "ai" : "browser";
+    this.tour = { panelId: front.id, steps, mode, ended: false };
+    store().setTour(front.id, { steps, shown: 0 });
+    if (mode === "browser") this.speakTourStep(0);
+    return { ok: true, steps: steps.map((s, i) => `${i + 1}. ${s.text}`) };
+  }
+
+  private revealStep(count: number): void {
+    const tour = this.tour;
+    if (!tour) return;
+    const panel = store().stage.find((p) => p.id === tour.panelId && !p.leaving);
+    if (!panel) {
+      this.endTour();
+      return;
+    }
+    const shown = Math.min(Math.max(count, panel.tour?.shown ?? 0), tour.steps.length);
+    if (shown !== panel.tour?.shown) {
+      store().setTour(tour.panelId, { steps: tour.steps, shown });
+      blip(false);
+    }
+    if (shown >= tour.steps.length) this.finishTour();
+  }
+
+  /** Browser voice: speak one step, highlight it as it starts, then go on. */
+  private speakTourStep(index: number): void {
+    const tour = this.tour;
+    if (!tour || tour.mode !== "browser" || index >= tour.steps.length) return;
+    this.revealStep(index + 1);
+    const text = tour.steps[index].text;
+    store().addCaption("ai", text, true);
+    let done = false;
+    const next = () => {
+      if (done) return;
+      done = true;
+      if (this.tour === tour) window.setTimeout(() => this.speakTourStep(index + 1), 350);
+    };
+    if (store().soundOn) {
+      speak(text, "en", next);
+      // some speech engines never report the end of an utterance
+      window.setTimeout(next, 2000 + text.length * 95);
+    } else {
+      window.setTimeout(next, 2600 + text.length * 35);
+    }
+  }
+
+  /** AI voice: the first step lights up as it starts talking, the next one after each sentence. */
+  private followSpeech(text: string, final: boolean): void {
+    const tour = this.tour;
+    if (!tour || tour.mode !== "ai" || tour.ended) return;
+    const sentences = (text.match(/[.!?](\s|$)/g) ?? []).length;
+    this.revealStep(final ? tour.steps.length : 1 + sentences);
+  }
+
+  private finishTour(): void {
+    const tour = this.tour;
+    if (!tour || tour.ended) return;
+    tour.ended = true;
+    // keep the marks up for a while, then let the chart go live again
+    window.clearTimeout(this.tourTimer);
+    this.tourTimer = window.setTimeout(() => {
+      if (this.tour === tour) this.endTour();
+    }, 16000);
+  }
+
+  endTour(): void {
+    window.clearTimeout(this.tourTimer);
+    if (this.tour) {
+      if (store().stage.some((p) => p.id === this.tour?.panelId)) store().setTour(this.tour.panelId, undefined);
+      this.tour = null;
+    }
+  }
+
   // -- mission mode, reports, setup assistant ---------------------------
 
   toggleMission(on = !store().mission): void {
@@ -65,6 +228,7 @@ class Controller {
   }
 
   private missionChartTimer = 0;
+  private autoPanelId: string | null = null;
 
   openReport(eventId?: string): void {
     const id = eventId ?? store().events[store().events.length - 1]?.id;
@@ -180,11 +344,16 @@ class Controller {
     if (event.severity === "critical") alarm();
     else chime();
     if (store().mission) {
-      // hands-free pitch: the matching chart follows the alert, and clears itself later
-      window.setTimeout(() => this.showForEvent(event, true), 2600);
+      // hands-free pitch: the matching chart follows the alert, and clears itself later,
+      // unless someone has asked for another chart in the meantime
+      window.setTimeout(() => {
+        this.showForEvent(event, true);
+        this.autoPanelId = store().stage.find((p) => !p.leaving)?.id ?? null;
+      }, 2600);
       window.clearTimeout(this.missionChartTimer);
       this.missionChartTimer = window.setTimeout(() => {
-        if (store().mission) this.dismiss();
+        const front = store().stage.find((p) => !p.leaving);
+        if (store().mission && front && front.id === this.autoPanelId) this.dismiss();
       }, 26000);
     }
     if (!store().speakAlerts) return;
@@ -204,6 +373,7 @@ class Controller {
   show(spec: ChartSpec, quiet = false): { ok: boolean; view: string; sensors: string[] } {
     const sensors = spec.sensors?.length ? spec.sensors : [this.lastSensor ?? this.firstSensor()];
     const clean: ChartSpec = { ...spec, sensors };
+    this.endTour();
     if (clean.view === "compare" && sensors.length < 2) {
       clean.sensors = (store().config?.sensors ?? []).map((s) => s.id);
     }
@@ -214,6 +384,7 @@ class Controller {
   }
 
   back(): boolean {
+    this.endTour();
     const visible = store().stage.filter((p) => !p.leaving);
     if (visible.length < 2) return false;
     const front = visible[0];
@@ -224,6 +395,7 @@ class Controller {
   }
 
   dismiss(): boolean {
+    this.endTour();
     const front = store().stage.find((p) => !p.leaving);
     if (!front) return false;
     this.stageApi?.dissolveFront();
@@ -272,7 +444,10 @@ class Controller {
       },
       onActivity: (activity) => store().patch({ activity }),
       onUserText: (text) => store().addCaption("you", text),
-      onAssistantText: (text, final) => store().addCaption("ai", text, final),
+      onAssistantText: (text, final) => {
+        store().addCaption("ai", text, final);
+        this.followSpeech(text, final);
+      },
       onToolCall: (name, args) => this.runTool(name, args),
       onLevel: (level) => {
         meters.level = level;
@@ -373,6 +548,17 @@ class Controller {
       }
       case "stage_control":
         return args.action === "dismiss" ? { ok: this.dismiss() } : { ok: this.back() };
+      case "make_chart": {
+        const chart = EXPLORE.includes(args.chart as ExploreChart) ? (args.chart as ExploreChart) : "histogram";
+        const sensors = Array.isArray(args.sensors) ? args.sensors.map((s) => this.resolveSensor(String(s))) : [];
+        return this.makeChart({ view: chart, sensors, window_s: windowS,
+          group_by: args.group_by as ChartSpec["group_by"], metric: args.metric as ChartSpec["metric"] });
+      }
+      case "explain_chart":
+        return this.explainChart();
+      case "show_shift":
+        return this.showShift(typeof args.sensor === "string" ? this.resolveSensor(args.sensor) : undefined,
+          typeof args.event_id === "string" ? args.event_id : undefined);
       case "suggest_settings": {
         this.lastSensor = sensor;
         this.openAssistant(sensor);
@@ -415,6 +601,48 @@ class Controller {
     }
     if (/\b(mission|jarvis)\b/.test(lower)) {
       this.toggleMission();
+      return;
+    }
+    if (/\b(explain|walk me through|erkl(ä|ae)r|what am i (looking at|seeing)|what does (this|the) chart)/.test(lower)) {
+      const result = await this.explainChart();
+      if (!result.ok) this.say(result.error ?? "There is no chart to explain.");
+      return;
+    }
+    const mentioned = config.sensors.filter((s) => lower.includes(s.name.toLowerCase()) || new RegExp(`\\b${s.id}\\b`).test(lower));
+    const ids = mentioned.map((s) => s.id);
+    const local = (spec: Omit<ChartSpec, "sensors">, sensors = ids) => this.makeChart({ ...spec, sensors }, true);
+    if (/\b(whole shift|shift|today|this morning|schicht|heute|timeline|what happened)\b/.test(lower)) {
+      await this.showShift(ids[0]);
+      this.say("Here is the whole shift. Scroll to zoom in, all the way down to single readings.");
+      return;
+    }
+    if (/\b(per sensor|each sensor|every sensor|pro sensor|je sensor)\b/.test(lower)
+      && /\b(spread|box ?plot|distribution|streuung|verteilung)/.test(lower)) {
+      await local({ view: "boxplot", window_s: 300, group_by: "sensor" }, config.sensors.map((s) => s.id));
+      return;
+    }
+    if (/\b(compare|vergleich\w*)\b/.test(lower) && /\b(noise|noisy|rauschen|alerts?|alarme?)\b/.test(lower)) {
+      const events = /alert|alarm/.test(lower);
+      await local({ view: "bar", metric: events ? "events" : "noise", window_s: events ? 28800 : 300 },
+        config.sensors.map((s) => s.id));
+      return;
+    }
+    if (/\b(histogram|distribution|distributed|spread|verteilung|streuung|capab\w*|cpk|f(ä|ae)hig)/.test(lower)) {
+      await local({ view: "histogram" }, ids.length ? ids : [this.lastSensor ?? this.firstSensor()]);
+      return;
+    }
+    if (/\b(box ?plot|morning|afternoon|per hour|hourly|calm\w*|unsettled|which hour|vormittag|nachmittag|ruhig\w*)\b/.test(lower)) {
+      await local({ view: "boxplot", window_s: 28800, group_by: "hour" }, [ids[0] ?? this.lastSensor ?? this.firstSensor()]);
+      return;
+    }
+    if (/\b(together|x-?y|scatter|correlat\w*|same time|zusammen|korrel\w*)\b/.test(lower)) {
+      await local({ view: "scatter", window_s: 60 }, config.sensors.map((s) => s.id).slice(0, 2));
+      return;
+    }
+    if (/\b(noisiest|rank\w*|which sensor is (the )?(most|least)|most alerts|wie viele alarme|bar chart)\b/.test(lower)) {
+      const events = /alert|alarm/.test(lower);
+      await local({ view: "bar", metric: events ? "events" : "noise", window_s: events ? 28800 : 300 },
+        config.sensors.map((s) => s.id));
       return;
     }
     const { intent, lang } = parseCommand(text, {
@@ -644,6 +872,7 @@ class Controller {
       "4": () => void this.demo("noise", { sensor: "s1" }),
       "5": () => void this.demo("dropout", { sensor: "s1" }),
       "6": () => void this.demo("misconfigure", { sensor: "s1" }),
+      "7": () => void this.demo("dent", { sensor: "s1" }),
       "0": () => void this.demo("reset"),
     };
     actions[key]?.();

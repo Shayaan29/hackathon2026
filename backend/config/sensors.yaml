@@ -20,8 +20,9 @@ cockpit:
 engine:
   analysis_rate_hz: 500             # samples per second used for analysis
   fast_buffer_s: 600                # full-rate history kept in memory (10 min)
-  slow_buffer_s: 10800              # 1-second averages kept in memory (3 h)
-  backfill_s: 900                   # simulator only: history created at start
+  slow_buffer_s: 28800              # 1-second min/mean/max kept in memory (8 h, one shift)
+  backfill_s: 900                   # simulator only: full-rate history created at start
+  part_rpm: 8.6                     # REPLACE: how fast the measured part turns (0 if it does not)
 
 sensors:
   - id: s1
@@ -93,6 +94,7 @@ detection:
   baseline_s: 20                    # learn "normal" noise from this much data
   vibration_window_s: 1.0
   vibration_ratio: 4.0              # short-window spread vs normal noise
+  vibration_min_hz: 12.0            # slower movements (runout, a dent once per turn) are not vibration
   vibration_min_prominence: 6.0     # how clearly one frequency must stand out
   noise_window_s: 4.0
   noise_ratio: 2.5                  # sustained noise vs normal noise

@@ -23,10 +23,21 @@ from .config import Settings
 from .detection import Detector, Event
 from .hub import COCKPIT, PHONE, Hub
 from .sources import SensorSource, SimulatedSensor, SourceError, create_source
+from .sources.simulator import make_history
+
+SNAPSHOT_BEFORE_S = 3.0  # full-rate data kept around every alert, for zooming in later
+SNAPSHOT_AFTER_S = 3.5
+SNAPSHOTS_PER_SENSOR = 80
+
+
+def track_angle(index: int, count: int) -> float:
+    """Where sensor ``index`` meets the turning part. The 3D twin uses the same rule:
+    the first half of the sensors sit left of the axis, the rest right of it."""
+    return math.pi if count > 1 and index < count / 2 else 0.0
 
 log = logging.getLogger("cockpit.engine")
 
-DEMO_KINDS = ("tap", "vibration", "drift", "drift_stop", "noise", "dropout", "misconfigure", "reset")
+DEMO_KINDS = ("tap", "vibration", "drift", "drift_stop", "noise", "dropout", "misconfigure", "dent", "reset")
 _NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
                  "eins": "1", "zwei": "2", "drei": "3", "vier": "4", "fünf": "5"}
 
@@ -61,12 +72,18 @@ class Engine:
         self._read_errors: dict[str, str] = {}
         self._task: asyncio.Task[None] | None = None
         self.started_at = time.time()
+        # earlier incidents of the shift (simulator only) and full-rate snapshots per sensor
+        self.history_events: list[Event] = []
+        self.snapshots: dict[str, list[tuple[float, float, np.ndarray]]] = {s.id: [] for s in settings.sensors}
+        self._snapshot_due: list[tuple[float, Event]] = []
 
     # -- lifecycle ---------------------------------------------------------
 
     def start_sources(self) -> None:
         now = time.time()
-        for cfg in self.settings.sensors:
+        SimulatedSensor.part_omega = 2 * math.pi * self.settings.engine.part_rpm / 60.0
+        count = len(self.settings.sensors)
+        for index, cfg in enumerate(self.settings.sensors):
             info: dict[str, Any] = {"type": cfg.source_type, "fallback": False, "error": None}
             try:
                 source = create_source(cfg, self.rate_hz)
@@ -76,13 +93,40 @@ class Engine:
                           cfg.id, cfg.source_type, exc)
                 source = SimulatedSensor(cfg, self.rate_hz)
                 info.update(type="simulator", fallback=True, error=str(exc))
+            if isinstance(source, SimulatedSensor):
+                source.track_angle = track_angle(index, count)
             self.sources[cfg.id] = source
             self.source_info[cfg.id] = info
-            history = source.backfill(self.settings.engine.backfill_s, now)
+        self._load_shift_history(now)
+        for cfg in self.settings.sensors:
+            history = self.sources[cfg.id].backfill(self.settings.engine.backfill_s, now)
             if history is not None:
                 values, t_end = history
                 self.buffers[cfg.id].append(values, t_end)
-            log.info("%s: %s source ready", cfg.id, info["type"])
+            log.info("%s: %s source ready", cfg.id, self.source_info[cfg.id]["type"])
+
+    def _load_shift_history(self, now: float) -> None:
+        """Simulator only: the earlier part of the shift, so there is a whole shift to explore.
+        Real sensors never get invented history."""
+        eng = self.settings.engine
+        sims = [s for s in self.sources.values() if isinstance(s, SimulatedSensor)]
+        if len(sims) != len(self.sources) or eng.slow_buffer_s <= eng.backfill_s + 60:
+            return
+        end = now - eng.backfill_s
+        start = now - eng.slow_buffer_s + 2
+        fixtures = {s.id: s.fixture for s in self.settings.sensors}
+        history = make_history(sims, fixtures, start, end)
+        for sid, (t, mean, lo, hi) in history["seconds"].items():
+            self.buffers[sid].append_slow(t, mean, lo, hi)
+        for i, e in enumerate(history["events"]):
+            self.history_events.append(Event(id=f"H{i + 1}", sensor=e["sensor"], kind=e["kind"],
+                                             severity=e["severity"], t=e["t"], numbers=e["numbers"],
+                                             summary=e["summary"], forecast_min=e.get("forecast_min"),
+                                             related_sensors=e.get("related_sensors", [])))
+        for sid, snaps in history["snapshots"].items():
+            self.snapshots[sid].extend(snaps)
+        log.info("shift history: %d earlier incidents over %.1f h", len(self.history_events),
+                 (end - start) / 3600)
 
     async def start(self) -> None:
         self.start_sources()
@@ -117,6 +161,7 @@ class Engine:
             if now - last_status >= self.status_interval_s:
                 self.hub.broadcast(self.status_message())
                 last_status = now
+            self._take_snapshots(now)
             next_tick += self.tick_s
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
@@ -159,7 +204,29 @@ class Engine:
                 "values": to_json_list(values, 3),
             })
 
+    def _take_snapshots(self, now: float) -> None:
+        """Keep the full-rate signal around each alert once it is complete."""
+        while self._snapshot_due and self._snapshot_due[0][0] <= now:
+            _, event = self._snapshot_due.pop(0)
+            for sid in [event.sensor, *event.related_sensors]:
+                if sid not in self.buffers:
+                    continue
+                t0, dt, values = self.buffers[sid].fast_range(event.t - SNAPSHOT_BEFORE_S,
+                                                              event.t + SNAPSHOT_AFTER_S)
+                if values.size:
+                    snaps = self.snapshots[sid]
+                    snaps.append((t0, dt, values.copy()))
+                    del snaps[:-SNAPSHOTS_PER_SENSOR]
+
+    def all_events(self, since: float | None = None, sensor: str | None = None) -> list[dict[str, Any]]:
+        """Earlier incidents of the shift and live alerts, oldest first."""
+        out = [e for e in [*self.history_events, *self.events]
+               if (since is None or e.t >= since)
+               and (sensor is None or e.sensor == sensor or sensor in e.related_sensors)]
+        return [{**e.to_message(), "historic": e.id.startswith("H")} for e in out]
+
     def publish_event(self, event: Event) -> None:
+        self._snapshot_due.append((event.t + SNAPSHOT_AFTER_S + 0.3, event))
         self.events.append(event)
         log.info("event %s %s: %s", event.kind, event.sensor, event.summary)
         self.hub.broadcast(event.to_message(), kinds=(COCKPIT, PHONE))
@@ -280,7 +347,8 @@ class Engine:
                     scale = 1.0 if cfg.id == sid else 0.8
                     params_i = dict(params)
                     params_i["amplitude"] = float(params.get("amplitude", 15.0)) * scale
-                    params_i["delay_s"] = 0.0 if cfg.id == sid else 0.01
+                    # a knock travels through steel in microseconds: both sensors feel it at once
+                    params_i["delay_s"] = 0.0
                     self.sources[cfg.id].inject("vibration", now, **params_i)
                     hit.append(cfg.id)
                 return {"ok": True, "kind": kind, "sensors": hit}

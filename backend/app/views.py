@@ -80,7 +80,7 @@ def spectrum(engine: Engine, sensor_id: str, window_s: float = 2.0, event_id: st
         t0, _, values = buf.fast_window(window_s)
     freqs, amps = amplitude_spectrum(values, engine.rate_hz)
     band = freqs <= max_hz
-    peak = spectral_peak(values, engine.rate_hz, fmin=3.0, fmax=max_hz)
+    peak = spectral_peak(values, engine.rate_hz, fmin=engine.settings.detection.vibration_min_hz, fmax=max_hz)
     return {
         "view": "spectrum",
         "sensor": sensor_id,

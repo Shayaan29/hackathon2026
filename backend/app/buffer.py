@@ -112,6 +112,13 @@ class SensorBuffer:
                 ring.extend(np.array([np.nan]))
         self._pending = []
 
+    def append_slow(self, t: np.ndarray, mean: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> None:
+        """Bulk-load per-second aggregates (older history, before any live data)."""
+        self.slow_t.extend(np.asarray(t, dtype=float))
+        self.slow_mean.extend(np.asarray(mean, dtype=float))
+        self.slow_min.extend(np.asarray(lo, dtype=float))
+        self.slow_max.extend(np.asarray(hi, dtype=float))
+
     def fast_window(self, seconds: float) -> tuple[float, float, np.ndarray]:
         """(time of first sample, sample spacing, values) for the last ``seconds``."""
         values = self.fast.last(int(round(seconds * self.rate_hz)))

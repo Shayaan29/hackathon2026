@@ -1,13 +1,16 @@
 # KI Sensor Cockpit
 
 A voice copilot for Micro-Epsilon sensors. It watches the live data in a 3D
-digital twin of the measuring setup, speaks up when something is off, explains
-it with charts, writes the incident report, fixes badly set up sensors, and
-lets the jury knock the machine from their own phones.
+digital twin of the measuring setup, speaks up when something is off, picks
+the chart that answers your question and walks you through it, zooms from the
+whole shift down to single readings, writes the incident report, fixes badly
+set up sensors, and lets the jury knock the machine from their own phones.
 
 ![Cockpit](docs/screenshot-cockpit.png)
 
 ![Mission mode](docs/screenshot-mission.png)
+
+![A chart the copilot picked and explained](docs/screenshot-charts.png)
 
 ## What it does
 
@@ -15,6 +18,10 @@ lets the jury knock the machine from their own phones.
 | --- | --- |
 | Digital twin | A live 3D model of the measuring setup. The laser beams draw the real triangulation geometry, move with the readings and turn amber or red with the sensor state. Alerts shake the gantry. |
 | Voice copilot | Ask in English or German. It answers with measured numbers only, shows charts and speaks up on its own when an alert comes in. |
+| Charts the AI picks | Ask a question and the copilot builds the chart that answers it: "how are the readings spread?" gives a histogram with Cp and Cpk, "which hour was calmest?" a box plot per hour, "do the sensors move together?" a scatter plot, "compare the noise" a bar chart. |
+| Charts that point while it talks | Say "explain this chart". The copilot walks through it step by step, and the part it is talking about lights up with a numbered marker at the moment it says it. |
+| The whole shift, down to single readings | "Show me the whole shift": eight hours on one timeline, with every alert marked. Scroll to zoom in, or let the tour fly to each incident, down to every single reading of a knock. |
+| The laser paints the part | In the twin, the part turns under the sensors and each laser paints its track: green in tolerance, amber close to the limit, red outside it. A dent on the part shows up as a red patch that comes round on every turn. |
 | Mission mode (**J**) | The lights go out: the same cockpit full screen and dark, glowing lasers, a HUD with dials, and charts that fly in by themselves after each alert. Made for the projector. |
 | Judges shake their phone | A judge shakes their phone (or taps Knock). The cockpit knocks the fixture, the real detection finds the vibration on every sensor of that fixture, and the copilot greets the judge by name. |
 | Incident report | One click or "write a report": likely causes, next steps, charts around the alert, a setup check and ticket text. Save as PDF, or scan the code to take it on a phone. |
@@ -23,6 +30,10 @@ lets the jury knock the machine from their own phones.
 Everything runs on dummy data out of the box. To go live you replace data,
 not code: sensor names and tolerances in one YAML file, the API key in `.env`,
 and either a CSV recording or the MEDAQLib template for live sensors.
+
+The eight hours of earlier incidents on the shift timeline are made up by the
+simulator so the demo has a past. With a recording or a live sensor nothing is
+made up: the timeline starts when the cockpit starts.
 
 ---
 
@@ -73,6 +84,7 @@ frontend appear instantly; restart the backend after Python changes.
 | --- | --- | --- |
 | Team name, copilot name, start language | `backend/config/sensors.yaml` → `cockpit` | `language: de` makes the copilot start in German |
 | Sensors: names, models, tolerances | `backend/config/sensors.yaml` → `sensors` | Every line marked `REPLACE` |
+| How fast the measured part turns | `sensors.yaml` → `engine.part_rpm` | Sets where the twin paints each reading on the part; `0` if the part does not turn |
 | Settings the copilot may change | `sensors.yaml` → `settings` per sensor | Dummy values; replace with the real parameters and ranges |
 | Alert thresholds | `sensors.yaml` → `detection` | Tune at the event with real table taps |
 | AI voice key and model | `backend/.env` | `gpt-realtime-mini` while building, the full model for the demo |
@@ -121,20 +133,30 @@ the safe switch if hardware misbehaves on stage.
         │  500 samples/s per sensor
         ▼
  Backend (Python, FastAPI)
-   buffers ─ 10 min full rate + 3 h per-second averages
+   buffers ─ 10 min full rate, 8 h per-second min/mean/max,
+             full-rate snapshots around every alert
    analysis ─ noise, FFT peak, drift trend, minutes to tolerance limit
    alert rules ─ vibration, noise, drift, out of range, invalid (with cooldowns)
+   charts ─ histogram, box plot, scatter, bar, shift timeline,
+            each with the steps that explain it
         │ WebSocket: samples, status, events          │ REST: views + AI tools
         ▼                                              ▼
  Cockpit (React)  ◄──── WebRTC audio + tool calls ────► OpenAI Realtime
-   tiles, 3D chart stack, alerts, voice dock
+   3D twin, chart stage, copilot, mission HUD
         │
  Phone page (/phone) ◄── WebSocket: events only
 ```
 
 * **The AI never makes up numbers.** Python computes every value; the voice
-  model calls tools (`get_data`, `analyze`, `suggest_settings`, `create_report`)
-  and only phrases the answer.
+  model calls tools (`get_data`, `analyze`, `make_chart`, `explain_chart`,
+  `show_shift`, `suggest_settings`, `create_report`) and only phrases the answer.
+* **Explanations are computed, not guessed.** Every chart comes with its
+  explanation steps, each tied to a place on the chart (a line, a band, a
+  point, a time range). The copilot says the steps, and the cockpit reveals
+  each marker as its sentence starts.
+* **Zooming never loses a spike.** Each slice of the timeline keeps its lowest
+  and highest reading as a band around the average, so a knock of a few
+  milliseconds is still visible in the eight-hour view.
 * **Shakes are real detections.** A phone shake knocks the simulated fixture;
   the same rules that watch the real sensors find the vibration.
 * **Spoken alerts.** The backend detects an event, the cockpit chimes, and the
@@ -156,7 +178,10 @@ backend/
     engine.py        acquisition loop: sources -> buffers -> rules -> clients
     detection.py     alert rules
     analysis.py      signal maths (pure functions)
-    views.py         data behind the four chart views
+    views.py         data behind the live chart views
+    explore.py       charts the copilot picks: histogram, box plot, scatter, bar
+    insights.py      the steps that explain each chart, tied to places on it
+    timeline.py      the shift timeline: picks the finest data for each zoom level
     tools.py         AI tools that run on the backend
     assistant.py     setup assistant: settings proposal and preview on real data
     report.py        incident reports as JSON and as a printable page
@@ -169,9 +194,9 @@ frontend/
   src/controller.ts  browser-side brain: alerts, voice, commands, tools
   src/lib/voice.ts   OpenAI Realtime over WebRTC with push-to-talk
   src/lib/commands.ts offline commands (English and German)
-  src/lib/charts.ts  ECharts views (light and mission themes)
-  src/lib/twin.ts    the 3D digital twin (three.js)
-  src/components/    twin, readouts, chart stage, copilot, mission HUD, report, setup check
+  src/lib/charts.ts  ECharts views (light and mission themes) and the explanation markers
+  src/lib/twin.ts    the 3D digital twin (three.js), including the painted part
+  src/components/    twin, readouts, chart stage, shift timeline, copilot, mission HUD, report, setup check
   src/phone/         the judges' phone page: alerts, flashlight, shake detection
 docs/                contract, demo script, screenshots
 ```
@@ -184,13 +209,16 @@ docs/                contract, demo script, screenshots
 | --- | --- |
 | Talk | Hold **Space** or the mic button, speak, release |
 | Type a command | Copilot box: "show me the last five minutes", "is the sensor broken?", "compare the sensors", "show the drift", "status", "write a report", "check the setup of sensor 1", "go back" |
+| Ask for a chart | "how are the readings spread?", "which hour was calmest?", "show the spread per sensor", "do the sensors move together?", "compare the noise" |
+| Explain a chart | "explain this chart" or "walk me through it" |
+| Whole shift | "show me the whole shift" or "what happened today?". Scroll or pinch to zoom, drag to pan, click an alert line to fly to it |
 | Mission mode | **J**, the Mission mode button, or say "mission mode" |
 | Latest incident report | **R**, "Write report" on an alert, or say "write a report" |
 | Setup check | "Check it" under a sensor, "Check setup" in the conversation, or ask "is sensor 1 set up well?" |
 | Previous chart | **←** or say "go back" (the chart flies back into the stack) |
 | Dismiss chart | **Delete** or say "dismiss" (the chart turns to dust) |
 | Phone QR code | **Q** |
-| Demo controls | **D**, then **1** tap, **2** start drift, **3** stop drift, **4** noise burst, **5** dropout, **6** misconfigure sensor 1, **0** reset |
+| Demo controls | **D**, then **1** tap, **2** start drift, **3** stop drift, **4** noise burst, **5** dropout, **6** misconfigure sensor 1, **7** dent in the part, **0** reset |
 | Sound on/off | **M** |
 | Hand gestures | Hand button in the top bar: open palm = back, fist = dismiss, thumbs up = confirm |
 
@@ -247,7 +275,7 @@ cockpit loads the model from the internet when you switch gestures on.
 ## Tests
 
 ```powershell
-# 31 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes (on macOS/Linux: .venv/bin/python -m pytest)
+# 46 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline (on macOS/Linux: .venv/bin/python -m pytest)
 cd backend
 .\.venv\Scripts\python.exe -m pytest
 

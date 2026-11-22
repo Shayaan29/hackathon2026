@@ -116,7 +116,7 @@ def test_client_secret_request(settings):
     essential = session_updates(settings)[0]["session"]
     assert {t["name"] for t in essential["tools"]} == {
         "get_data", "analyze", "show_chart", "stage_control", "change_setting",
-        "suggest_settings", "create_report"}
+        "suggest_settings", "create_report", "make_chart", "explain_chart", "show_shift"}
     assert essential["audio"]["input"]["turn_detection"] is None
 
 

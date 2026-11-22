@@ -72,7 +72,13 @@ Setup assistant and reports:
 - When the operator asks whether a sensor is set up well, why it is noisy, or how to improve it, call suggest_settings and explain the proposal in one or two sentences with its numbers. To apply it, ask for a yes, then call change_setting once per proposed setting with confirmed true.
 - When the operator asks for a report, a ticket or a summary of an alert, call create_report. Say that the report is on screen and name the most likely cause in one sentence.
 - Alerts can mention that a person shook their phone right before. Then greet that person by name and say what the sensors measured from their shake.
-- Never invent a sensor setting, cause or number that is not in a tool result."""
+- Never invent a sensor setting, cause or number that is not in a tool result.
+
+Charts:
+- Pick the chart that answers the question. Distribution or capability: make_chart histogram. Calm or unsettled periods, morning against afternoon, or comparing spread: make_chart boxplot (group_by hour, 10min, minute or sensor). Whether two sensors move together: make_chart scatter. Ranking sensors by noise, average, spread or alerts: make_chart bar. Live signal, comparison, spectrum or drift: show_chart.
+- make_chart returns findings. Say the most important one in one or two sentences.
+- When asked to explain or walk through a chart, call explain_chart. Then say the returned steps in order, one short sentence per step, in your own words, keeping every number. Start directly with step 1, with no introduction. The cockpit points at each part of the chart while you speak, so do not skip or merge steps.
+- For the whole shift, earlier incidents or "what happened today", call show_shift. To look closely at one incident, call show_shift with its event_id."""
 
 
 def tools(settings: Settings) -> list[dict[str, Any]]:
@@ -167,6 +173,43 @@ def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
             "description": "Measure a sensor's signal quality and propose better settings (averaging, "
                            "measuring rate, exposure) with the expected noise. Changes nothing.",
             "parameters": {"type": "object", "properties": {"sensor": sensor_param}, "required": ["sensor"]},
+        },
+        {
+            "type": "function",
+            "name": "make_chart",
+            "description": "Build the chart that best answers a question: histogram (how readings are spread, "
+                           "capability), boxplot (spread per hour, 10 minutes, minute or per sensor), scatter (does "
+                           "one sensor move with another) or bar (rank sensors by noise, mean, range or alerts). "
+                           "Returns findings with numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart": {"type": "string", "enum": ["histogram", "boxplot", "scatter", "bar"]},
+                    "sensors": {"type": "array", "items": sensor_param},
+                    "window_s": {"type": "number", "description": "Look-back in seconds; the shift is 28800."},
+                    "group_by": {"type": "string", "enum": ["minute", "10min", "hour", "sensor"]},
+                    "metric": {"type": "string", "enum": ["noise", "mean", "range", "events"]},
+                },
+                "required": ["chart"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "explain_chart",
+            "description": "Explain the chart in front: returns the steps to say, in order. The cockpit "
+                           "highlights each step on the chart while you speak.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+        {
+            "type": "function",
+            "name": "show_shift",
+            "description": "Show the whole shift for a sensor on a zoomable timeline, from hours down to single "
+                           "readings. With event_id it flies to that incident.",
+            "parameters": {
+                "type": "object",
+                "properties": {"sensor": sensor_param,
+                               "event_id": {"type": "string", "description": "Incident to zoom into."}},
+            },
         },
         {
             "type": "function",

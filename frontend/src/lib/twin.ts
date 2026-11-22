@@ -17,13 +17,37 @@ export type TwinState = "ok" | "warning" | "critical" | "invalid";
 
 export interface TwinSensor {
   id: string;
-  /** half of the tolerance band, used to scale the spot movement */
+  /** half of the tolerance band, used to scale the spot movement and the paint colour */
   range: number;
+  nominal: number;
+  /** where the laser meets the turning part: angle around the axis and distance from it */
+  angle: number;
+  radius: number;
 }
 
 export interface TwinSource {
   value(id: string): number | null;
   state(id: string): TwinState;
+  /** every new reading of a sensor since tMin, oldest first */
+  forEachSince(id: string, tMin: number, fn: (t: number, v: number) => void): void;
+  /** the server's clock, so the part turns in step with the data */
+  now(): number;
+}
+
+export { trackFor } from "./tracks";
+
+const PART_R = 0.92;
+const PAINT = 512;
+const GREEN = [31, 185, 124];
+const AMBER = [255, 165, 31];
+const RED = [255, 49, 80];
+
+/** Paint colour for a deviation, as a share of the half tolerance band. */
+function deviationColor(share: number): string {
+  const mix = (a: number[], b: number[], k: number) => a.map((x, i) => Math.round(x + (b[i] - x) * k));
+  const c = share < 0.45 ? GREEN : share < 0.8 ? mix(GREEN, AMBER, (share - 0.45) / 0.35)
+    : share < 1 ? mix(AMBER, RED, (share - 0.8) / 0.2) : RED;
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
 const STATE_COLOR: Record<TwinState, THREE.Color> = {
@@ -133,8 +157,12 @@ export class Twin {
   private scanAt = -10;
   private lastInteraction = -10;
   private readonly resize: ResizeObserver;
+  private paintCtx!: CanvasRenderingContext2D;
+  private paintTex!: THREE.CanvasTexture;
+  private readonly painted = new Map<string, { t: number; x: number; y: number }>();
 
-  constructor(private readonly host: HTMLElement, sensors: TwinSensor[], private readonly source: TwinSource) {
+  constructor(private readonly host: HTMLElement, sensors: TwinSensor[], private readonly source: TwinSource,
+              private readonly omega = 0.9) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     this.renderer.toneMapping = THREE.NeutralToneMapping;
@@ -147,7 +175,7 @@ export class Twin {
     this.scene.background = LOOK.light.bg.clone();
     this.scene.fog = new THREE.Fog(LOOK.light.bg.clone(), 14, 30);
 
-    this.camera.position.set(3.7, 2.6, 4.7);
+    this.camera.position.set(3.4, 3.3, 4.6);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, 1.0, 0);
     this.controls.enableDamping = true;
@@ -254,16 +282,29 @@ export class Twin {
     }
     add(new THREE.BoxGeometry(0.22, 0.02, 0.06), housing, 0.75, PART_TOP - TABLE_TOP - 0.15 + 0.004, 0, this.part);
 
+    // the lasers paint what they measure onto the part, so a defect shows where it sits
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = PAINT;
+    this.paintCtx = canvas.getContext("2d")!;
+    this.paintCtx.lineCap = "round";
+    this.paintTex = new THREE.CanvasTexture(canvas);
+    this.paintTex.colorSpace = THREE.SRGBColorSpace;
+    this.paintTex.anisotropy = 4;
+    const paintDisc = new THREE.Mesh(new THREE.CircleGeometry(PART_R - 0.004, 128),
+      new THREE.MeshBasicMaterial({ map: this.paintTex, transparent: true, depthWrite: false, toneMapped: false }));
+    paintDisc.rotation.x = -Math.PI / 2;
+    paintDisc.position.y = PART_TOP - TABLE_TOP - 0.15 + 0.005;
+    this.part.add(paintDisc);
+
     // gantry: two posts and a crossbeam, all of it moves when knocked
     this.scene.add(this.gantry);
     add(new THREE.BoxGeometry(0.2, BEAM_Y - TABLE_TOP + 0.1, 0.24), aluminium, -1.45, (BEAM_Y + TABLE_TOP) / 2, 0, this.gantry);
     add(new THREE.BoxGeometry(0.2, BEAM_Y - TABLE_TOP + 0.1, 0.24), aluminium, 1.45, (BEAM_Y + TABLE_TOP) / 2, 0, this.gantry);
     add(new THREE.BoxGeometry(3.12, 0.18, 0.24), aluminium, 0, BEAM_Y, 0, this.gantry);
 
-    const n = sensors.length;
-    sensors.forEach((cfg, i) => {
-      const x = n === 1 ? 0.55 : -0.62 + (1.24 * i) / Math.max(n - 1, 1);
-      const body = add(new THREE.BoxGeometry(0.24, 0.42, 0.2), housing, x, SENSOR_BOTTOM + 0.21, 0.0, this.gantry);
+    sensors.forEach((cfg) => {
+      const x = cfg.angle === Math.PI ? -cfg.radius : cfg.radius;
+      const body = add(new THREE.BoxGeometry(0.24, 0.42, 0.2), housing, x + 0.05, SENSOR_BOTTOM + 0.21, 0.0, this.gantry);
       // front window and status LED
       const windowMat = new THREE.MeshStandardMaterial({ color: "#10131a", roughness: 0.05, metalness: 0.2 });
       add(new THREE.BoxGeometry(0.2, 0.012, 0.16), windowMat, 0, -0.21 - 0.006, 0, body);
@@ -282,11 +323,11 @@ export class Twin {
       spot.scale.setScalar(0.16);
       this.scene.add(spot);
 
-      // tolerance ring traced by this laser on the turning part
-      const ring = new THREE.MeshBasicMaterial({ color: "#1fb97c", transparent: true, opacity: 0.55, toneMapped: false,
+      // faint guide for the circle this laser traces on the turning part
+      const ring = new THREE.MeshBasicMaterial({ color: "#8a94a3", transparent: true, opacity: 0.25, toneMapped: false,
         side: THREE.DoubleSide, depthWrite: false });
-      const radius = Math.abs(x) < 0.05 ? 0.3 : Math.abs(x);
-      const ringMesh = new THREE.Mesh(new THREE.RingGeometry(radius - 0.012, radius + 0.012, 96), ring);
+      const radius = cfg.radius;
+      const ringMesh = new THREE.Mesh(new THREE.RingGeometry(radius - 0.004, radius + 0.004, 128), ring);
       ringMesh.rotation.x = -Math.PI / 2;
       ringMesh.position.y = PART_TOP + 0.003;
       this.scene.add(ringMesh);
@@ -294,8 +335,8 @@ export class Twin {
       // sensor cable, routed up over the beam and down the nearest post
       const side = x < 0 ? -1 : 1;
       const cable = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(x, SENSOR_BOTTOM + 0.42, 0.06),
-        new THREE.Vector3(x, BEAM_Y + 0.16, 0.14),
+        new THREE.Vector3(x + 0.05, SENSOR_BOTTOM + 0.42, 0.06),
+        new THREE.Vector3(x + 0.05, BEAM_Y + 0.16, 0.14),
         new THREE.Vector3(side * 1.25, BEAM_Y + 0.12, 0.16),
         new THREE.Vector3(side * 1.56, BEAM_Y - 0.2, 0.15),
         new THREE.Vector3(side * 1.57, TABLE_TOP + 0.2, 0.15),
@@ -309,9 +350,9 @@ export class Twin {
 
       this.rigs.push({
         cfg, anchor, emitted, reflected, spot, led, ring,
-        emitter: new THREE.Vector3(x - 0.06, SENSOR_BOTTOM, 0),
-        receiver: new THREE.Vector3(x + 0.07, SENSOR_BOTTOM, 0),
-        surface: new THREE.Vector3(x - 0.06, PART_TOP, 0),
+        emitter: new THREE.Vector3(x, SENSOR_BOTTOM, 0),
+        receiver: new THREE.Vector3(x + 0.11, SENSOR_BOTTOM, 0),
+        surface: new THREE.Vector3(x, PART_TOP, 0),
         shown: 0,
         color: STATE_COLOR.ok.clone(),
       });
@@ -386,8 +427,9 @@ export class Twin {
       scanMat.opacity = 0;
     }
 
-    // the part turns; auto-rotation of the camera resumes after a pause
-    this.part.rotation.y += dt * 0.9;
+    // the part turns in step with the data; auto-rotation of the camera resumes after a pause
+    this.part.rotation.y = (this.omega * this.source.now()) % (2 * Math.PI);
+    this.paintTrail(dt);
     if (!this.controls.autoRotate && t - this.lastInteraction > 6) this.controls.autoRotate = true;
 
     // knock: damped ringing of the gantry, plus the shock ring
@@ -434,13 +476,46 @@ export class Twin {
       rig.spot.material.opacity = flicker;
       rig.spot.scale.setScalar(0.13 + 0.06 * glow + (state === "ok" ? 0 : 0.04 * Math.sin(t * 10)));
       rig.led.color.copy(rig.color).multiplyScalar(HDR);
-      rig.ring.color.set(state === "ok" ? "#1fb97c" : state === "warning" ? "#ffa51f" : state === "critical" ? "#ff3150" : "#8a94a3");
-      rig.ring.opacity = 0.35 + 0.3 * glow;
+      rig.ring.opacity = 0.18 + 0.15 * glow;
     }
 
     this.controls.update();
     this.composer.render(dt);
   };
+
+  /** Paint new readings onto the part at the spot the laser saw them; old paint fades over a few turns. */
+  private paintTrail(dt: number): void {
+    const ctx = this.paintCtx;
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillStyle = `rgba(0,0,0,${1 - Math.exp(-dt / 28)})`;
+    ctx.fillRect(0, 0, PAINT, PAINT);
+    ctx.globalCompositeOperation = "source-over";
+    if (this.omega <= 0) return;
+    const now = this.source.now();
+    for (const rig of this.rigs) {
+      const { id, angle, radius, nominal, range } = rig.cfg;
+      const last = this.painted.get(id);
+      this.source.forEachSince(id, last ? last.t + 1e-6 : now - 0.4, (t, v) => {
+        const phi = angle - this.omega * t;
+        const x = ((radius * Math.cos(phi)) / (2 * PART_R) + 0.5) * PAINT;
+        const y = (1 - ((radius * Math.sin(phi)) / (2 * PART_R) + 0.5)) * PAINT;
+        const prev = this.painted.get(id);
+        if (Number.isFinite(v)) {
+          ctx.strokeStyle = deviationColor(Math.abs(v - nominal) / range);
+          ctx.lineWidth = 9 + 9 * Math.min(Math.abs(v - nominal) / range, 1.2);
+          ctx.beginPath();
+          if (prev && Number.isFinite(prev.x) && t - prev.t < 0.4) ctx.moveTo(prev.x, prev.y);
+          else ctx.moveTo(x, y);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+          this.painted.set(id, { t, x, y });
+        } else {
+          this.painted.set(id, { t, x: Number.NaN, y: Number.NaN }); // no reading: leave a gap
+        }
+      });
+    }
+    this.paintTex.needsUpdate = true;
+  }
 
   dispose(): void {
     cancelAnimationFrame(this.raf);

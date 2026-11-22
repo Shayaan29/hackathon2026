@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import { signed } from "../lib/format";
 import { series } from "../lib/live";
+import { serverNow } from "../lib/live";
+import { trackFor } from "../lib/tracks";
 import type { Twin, TwinState } from "../lib/twin";
 import { useStore } from "../state/store";
 
@@ -33,16 +35,19 @@ export function TwinView() {
     void import("../lib/twin").then(({ Twin }) => {
       if (disposed) return;
       try {
-        const twin = new Twin(host, config.sensors.map((s) => ({
-          id: s.id, range: Math.max((s.tolerance.high - s.tolerance.low) / 2, 1e-6),
+        const twin = new Twin(host, config.sensors.map((s, i) => ({
+          id: s.id, range: Math.max((s.tolerance.high - s.tolerance.low) / 2, 1e-6), nominal: s.nominal,
+          ...trackFor(i, config.sensors.length),
         })), {
+          forEachSince: (id, tMin, fn) => series(id).forEachSince(tMin, fn),
+          now: serverNow,
           value: (id) => {
             const latest = series(id).latest();
             const nominal = get().config?.sensors.find((s) => s.id === id)?.nominal ?? 0;
             return latest && Number.isFinite(latest.v) ? latest.v - nominal : null;
           },
           state: sensorState,
-        });
+        }, (2 * Math.PI * (config.part_rpm ?? 8.6)) / 60);
         twinRef.current = twin;
         twin.setMission(get().mission);
       } catch (error) {

@@ -137,6 +137,8 @@ class DetectionConfig:
     baseline_s: float = 20.0
     vibration_window_s: float = 1.0
     vibration_ratio: float = 4.0
+    # slower movements (a dent passing once per turn, runout) are not vibration
+    vibration_min_hz: float = 12.0
     vibration_min_prominence: float = 6.0
     noise_window_s: float = 4.0
     noise_ratio: float = 2.5
@@ -165,8 +167,9 @@ class DetectionConfig:
 class EngineConfig:
     analysis_rate_hz: int = 500
     fast_buffer_s: int = 600
-    slow_buffer_s: int = 10800
+    slow_buffer_s: int = 28800
     backfill_s: int = 900
+    part_rpm: float = 8.6  # how fast the measured part turns, for the twin and the runout
 
 
 @dataclass(frozen=True)
@@ -284,6 +287,7 @@ def _parse_engine(raw: dict[str, Any] | None) -> EngineConfig:
         values[key] = int(raw.get(key, getattr(defaults, key)))
     if values["analysis_rate_hz"] < 50:
         raise ConfigError("engine.analysis_rate_hz must be at least 50")
+    values["part_rpm"] = float(raw.get("part_rpm", defaults.part_rpm))
     return EngineConfig(**values)
 
 

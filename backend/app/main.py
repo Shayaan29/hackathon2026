@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, assistant, report, tools, views
+from . import __version__, assistant, explore, insights, report, timeline, tools, views
 from .config import FRONTEND_DIST, Settings, load_settings
 from .engine import DEMO_KINDS, Engine, EngineError
 from .hub import COCKPIT, PHONE, Hub
@@ -100,6 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "token_required": bool(settings.cockpit_token),
             "alert_prefix": ALERT_PREFIX,
             "demo_kinds": list(DEMO_KINDS),
+            "part_rpm": settings.engine.part_rpm,
             "version": __version__,
         }
 
@@ -135,6 +136,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/drift")
     def drift(sensor: str = "s1", window_s: float = 900.0, horizon_min: float = 60.0) -> dict[str, Any]:
         return views.drift(engine, sensor_or_400(sensor), window_s, horizon_min)
+
+    @app.get("/api/explore")
+    def explore_chart(chart: str, sensors: str = "s1", window_s: float | None = None,
+                      group_by: str | None = None, metric: str | None = None) -> dict[str, Any]:
+        ids = [sensor_or_400(s) for s in sensors.split(",") if s.strip()] or [sensor_or_400(None)]
+        try:
+            return explore.build(engine, chart, ids, window_s, group_by, metric)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/shift")
+    def shift(sensor: str = "s1", points: int = Query(1800, ge=100, le=6000)) -> dict[str, Any]:
+        return timeline.shift(engine, sensor_or_400(sensor), points)
+
+    @app.get("/api/range")
+    def time_range(sensor: str, t0: float, t1: float,
+                   points: int = Query(1600, ge=100, le=6000)) -> dict[str, Any]:
+        return timeline.range_data(engine, sensor_or_400(sensor), t0, t1, points)
+
+    @app.get("/api/insights")
+    def chart_insights(view: str, sensors: str = "s1", window_s: float | None = None,
+                       event_id: str | None = None) -> dict[str, Any]:
+        """The steps for explaining one of the live chart views."""
+        ids = [sensor_or_400(s) for s in sensors.split(",") if s.strip()] or [sensor_or_400(None)]
+        if view in ("timeseries", "compare"):
+            data = views.history(engine, ids if view == "compare" else ids[:1],
+                                 window_s or (60.0 if view == "compare" else 300.0))
+            steps = insights.for_history(engine, data)
+        elif view == "spectrum":
+            steps = insights.for_spectrum(engine, views.spectrum(engine, ids[0], 2.0, event_id))
+        elif view == "drift":
+            steps = insights.for_drift(engine, views.drift(engine, ids[0], window_s or 900.0))
+        else:
+            raise HTTPException(status_code=400, detail=f"no explanation for view {view!r}")
+        return {"view": view, "insights": steps}
 
     # -- REST: AI tools ------------------------------------------------------
 

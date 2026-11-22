@@ -164,12 +164,12 @@ class Detector:
         m.mean_short = float(ok.mean()) if ok.size else None
 
         if m.ratio_short >= cfg.vibration_ratio * 0.5 or m.ratio_noise >= cfg.noise_ratio:
-            m.peak = spectral_peak(short, self.rate_hz, fmin=3.0)
+            m.peak = spectral_peak(short, self.rate_hz, fmin=cfg.vibration_min_hz)
             finite_short = short[np.isfinite(short)]
             if finite_short.size:
                 m.peak_dev = float(np.max(np.abs(finite_short - np.median(finite_short))))
         if m.ratio_noise >= cfg.noise_ratio:
-            m.peak_medium = spectral_peak(medium, self.rate_hz, fmin=3.0)
+            m.peak_medium = spectral_peak(medium, self.rate_hz, fmin=cfg.vibration_min_hz)
 
         m.drift = self._drift_trend(buf)
 

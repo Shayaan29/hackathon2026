@@ -193,7 +193,8 @@ export function Copilot() {
         {feed.length === 0 && (
           <li className="feed-empty">
             <p>{assistant} is watching {config?.sensors.length ?? 0} sensors and will speak up when something changes.</p>
-            <p className="muted">Try “show me the last five minutes”, “is sensor 1 set up well?” or “write a report”.</p>
+            <p className="muted">Try “show me the whole shift”, “how are the readings spread?”, “do the sensors move
+              together?”, “explain this chart” or “is sensor 1 set up well?”.</p>
           </li>
         )}
         {feed.map((item) => <Item key={item.id} item={item} assistant={assistant} />)}

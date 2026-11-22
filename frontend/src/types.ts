@@ -3,7 +3,8 @@
 export type Severity = "info" | "warning" | "critical";
 export type EventKind = "vibration" | "noise" | "drift" | "out_of_range" | "invalid";
 export type SensorState = "ok" | "warning" | "critical";
-export type ChartView = "timeseries" | "compare" | "spectrum" | "drift";
+export type ChartView = "timeseries" | "compare" | "spectrum" | "drift" | ExploreChart | "shift";
+export type ExploreChart = "histogram" | "boxplot" | "scatter" | "bar";
 
 export interface Tolerance {
   low: number;
@@ -40,6 +41,7 @@ export interface CockpitConfig {
   token_required: boolean;
   alert_prefix: string;
   demo_kinds: string[];
+  part_rpm?: number;
   version: string;
 }
 
@@ -153,6 +155,107 @@ export interface ChartSpec {
   sensors: string[];
   window_s?: number;
   event_id?: string;
+  group_by?: "minute" | "10min" | "hour" | "sensor";
+  metric?: "noise" | "mean" | "range" | "events";
+}
+
+/** What to point at while one explanation step is spoken (see backend insights.py). */
+export interface Anchor {
+  type: "x" | "point" | "xspan" | "yspan" | "grid" | "category" | "line" | "zoom";
+  t?: number;
+  x?: number;
+  y?: number;
+  t0?: number;
+  t1?: number;
+  x0?: number;
+  x1?: number;
+  y0?: number;
+  y1?: number;
+  index?: number;
+  sensor?: string;
+  label?: string;
+}
+
+export interface InsightStep {
+  text: string;
+  anchor: Anchor | null;
+}
+
+export interface HistogramData {
+  view: "histogram";
+  window_s: number;
+  per: string;
+  series: {
+    sensor: string; name: string; unit: string; nominal: number; edges: number[]; counts: number[];
+    n: number; mean: number; std: number; p05: number; p95: number; tolerance: Tolerance; cp: number; cpk: number;
+    /** readings outside the tolerance, and the one furthest from nominal */
+    outside: number; worst: number | null;
+  }[];
+  insights: InsightStep[];
+}
+
+export interface BoxplotData {
+  view: "boxplot";
+  window_s: number;
+  group_by: string;
+  per: string;
+  unit: string;
+  sensors: string[];
+  categories: string[];
+  boxes: number[][];
+  counts: number[];
+  insights: InsightStep[];
+}
+
+export interface ScatterData {
+  view: "scatter";
+  window_s: number;
+  x: { sensor: string; name: string; unit: string };
+  y: { sensor: string; name: string; unit: string };
+  points: [number, number][];
+  r: number;
+  slope: number;
+  highlight: { t: number; r: number; lag_ms: number; points: [number, number][] } | null;
+  insights: InsightStep[];
+}
+
+export interface BarData {
+  view: "bar";
+  metric: string;
+  window_s: number;
+  unit: string;
+  categories: string[];
+  values: number[];
+  label: string;
+  insights: InsightStep[];
+}
+
+export interface RangeData {
+  view: "shift";
+  sensor: string;
+  name: string;
+  unit: string;
+  tolerance: Tolerance;
+  nominal: number;
+  t0: number;
+  t1: number;
+  t_now: number;
+  oldest: number;
+  fast_start: number;
+  t: number[];
+  /** average of each slice (every reading when nothing is thinned) */
+  v: (number | null)[];
+  /** lowest and highest reading of each slice: the band around the line */
+  lo: (number | null)[];
+  hi: (number | null)[];
+  source: "full" | "snapshot" | "seconds";
+  resolution_s: number;
+  events: (CockpitEvent & { historic?: boolean })[];
+}
+
+export interface ShiftData extends RangeData {
+  shift_start: number;
+  insights: InsightStep[];
 }
 
 export interface Series {
@@ -204,7 +307,7 @@ export interface DriftData {
   } | null;
 }
 
-export type ViewData = HistoryData | SpectrumData | DriftData;
+export type ViewData = HistoryData | SpectrumData | DriftData | HistogramData | BoxplotData | ScatterData | BarData | ShiftData;
 
 export interface RealtimeSession {
   client_secret: string;

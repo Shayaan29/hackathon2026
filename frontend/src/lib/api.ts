@@ -1,7 +1,14 @@
 // Thin client for the backend REST API.
 import type {
   AssistantPlan,
+  BarData,
+  BoxplotData,
   ChartSpec,
+  HistogramData,
+  InsightStep,
+  RangeData,
+  ScatterData,
+  ShiftData,
   CockpitConfig,
   DriftData,
   HistoryData,
@@ -82,6 +89,22 @@ export const api = {
   changeSetting: (sensor: string, name: string, value: string | number, confirmed: boolean) =>
     post<Record<string, unknown>>("/api/tools/change_setting", { sensor, name, value, confirmed }),
   realtimeSession: () => post<RealtimeSession>("/api/realtime/session"),
+  explore: (spec: ChartSpec) => {
+    const q = new URLSearchParams({ chart: spec.view, sensors: spec.sensors.join(",") });
+    if (spec.window_s) q.set("window_s", String(spec.window_s));
+    if (spec.group_by) q.set("group_by", spec.group_by);
+    if (spec.metric) q.set("metric", spec.metric);
+    return request<HistogramData | BoxplotData | ScatterData | BarData>(`/api/explore?${q}`);
+  },
+  shift: (sensor: string) => request<ShiftData>(`/api/shift?sensor=${encodeURIComponent(sensor)}`),
+  range: (sensor: string, t0: number, t1: number, points = 1600) =>
+    request<RangeData>(`/api/range?sensor=${encodeURIComponent(sensor)}&t0=${t0}&t1=${t1}&points=${points}`),
+  insights: (spec: ChartSpec) => {
+    const q = new URLSearchParams({ view: spec.view, sensors: spec.sensors.join(",") });
+    if (spec.window_s) q.set("window_s", String(spec.window_s));
+    if (spec.event_id) q.set("event_id", spec.event_id);
+    return request<{ insights: InsightStep[] }>(`/api/insights?${q}`);
+  },
   assistant: (sensor: string) => request<AssistantPlan>(`/api/assistant/${encodeURIComponent(sensor)}`),
   applyAssistant: (sensor: string) =>
     post<{ ok: boolean; error?: string; summary?: string }>(`/api/assistant/${encodeURIComponent(sensor)}/apply`),
@@ -102,6 +125,13 @@ export function loadView(spec: ChartSpec): Promise<ViewData> {
       return api.drift(sensors[0], spec.window_s ?? 900);
     case "compare":
       return api.history(sensors, spec.window_s ?? 60);
+    case "histogram":
+    case "boxplot":
+    case "scatter":
+    case "bar":
+      return api.explore({ ...spec, sensors });
+    case "shift":
+      return api.shift(sensors[0]);
     default:
       return api.history([sensors[0]], spec.window_s ?? 300);
   }
