@@ -1,0 +1,21 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets
+backend/.env
+.env
+
+# Node / build output
+frontend/node_modules/
+frontend/dist/
+frontend/public/mediapipe/
+frontend/public/models/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

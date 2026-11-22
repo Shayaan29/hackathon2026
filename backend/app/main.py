@@ -1,0 +1,240 @@
+"""FastAPI application: REST API, WebSocket streams and the built frontend."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from pydantic import BaseModel, Field
+
+from . import __version__, tools, views
+from .config import FRONTEND_DIST, Settings, load_settings
+from .engine import DEMO_KINDS, Engine, EngineError
+from .hub import COCKPIT, PHONE, Hub
+from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+                    datefmt="%H:%M:%S")
+log = logging.getLogger("cockpit")
+
+
+class ToolRequest(BaseModel):
+    sensor: str = "s1"
+    window_s: float | None = None
+
+
+class SettingRequest(BaseModel):
+    sensor: str
+    name: str
+    value: Any
+    confirmed: bool = False
+
+
+class DemoRequest(BaseModel):
+    sensor: str | None = None
+    amplitude: float | None = None
+    frequency_hz: float | None = None
+    decay_s: float | None = None
+    rate_per_min: float | None = None
+    factor: float | None = None
+    duration_s: float | None = None
+    share: float | None = None
+
+    def params(self) -> dict[str, float]:
+        return {k: v for k, v in self.model_dump().items() if k != "sensor" and v is not None}
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or load_settings()
+    hub = Hub()
+    engine = Engine(settings, hub)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await engine.start()
+        log.info("cockpit ready on http://localhost:%s (voice %s)", settings.port,
+                 "on, model " + settings.realtime_model if settings.voice_enabled else "off")
+        yield
+        await engine.stop()
+
+    app = FastAPI(title="KI Sensor Cockpit", version=__version__, lifespan=lifespan)
+    app.state.engine = engine
+    app.state.settings = settings
+    app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+                       allow_methods=["*"], allow_headers=["*"])
+
+    def require_token(x_cockpit_token: str | None = Header(default=None)) -> None:
+        if settings.cockpit_token and x_cockpit_token != settings.cockpit_token:
+            raise HTTPException(status_code=401, detail="Missing or wrong cockpit token. "
+                                "Open the cockpit once with ?token=<COCKPIT_TOKEN>.")
+
+    def sensor_or_400(text: str | None) -> str:
+        try:
+            return engine.resolve_sensor(text)
+        except EngineError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def public_config() -> dict[str, Any]:
+        return {
+            "title": settings.cockpit.title,
+            "team": settings.cockpit.team,
+            "assistant_name": settings.cockpit.assistant_name,
+            "language": settings.cockpit.language,
+            "sensors": [s.public() for s in settings.sensors],
+            "voice": {"enabled": settings.voice_enabled, "model": settings.realtime_model},
+            "token_required": bool(settings.cockpit_token),
+            "alert_prefix": ALERT_PREFIX,
+            "demo_kinds": list(DEMO_KINDS),
+            "version": __version__,
+        }
+
+    # -- REST: read-only -----------------------------------------------------
+
+    @app.get("/api/health")
+    def health() -> dict[str, Any]:
+        return {"ok": True, "version": __version__, "uptime_s": round(time.time() - engine.started_at)}
+
+    @app.get("/api/config")
+    def config() -> dict[str, Any]:
+        return public_config()
+
+    @app.get("/api/status")
+    def status() -> dict[str, Any]:
+        return engine.status_message()
+
+    @app.get("/api/events")
+    def events(limit: int = Query(50, ge=1, le=300)) -> dict[str, Any]:
+        return {"events": engine.recent_events(limit)}
+
+    @app.get("/api/history")
+    def history(sensors: str = "s1", window_s: float = 300.0,
+                max_points: int = Query(1200, ge=50, le=5000)) -> dict[str, Any]:
+        ids = [sensor_or_400(s) for s in sensors.split(",") if s.strip()]
+        return views.history(engine, ids or [sensor_or_400(None)], window_s, max_points)
+
+    @app.get("/api/spectrum")
+    def spectrum(sensor: str = "s1", window_s: float = 2.0, event_id: str | None = None,
+                 max_hz: float = 100.0) -> dict[str, Any]:
+        return views.spectrum(engine, sensor_or_400(sensor), window_s, event_id, max_hz)
+
+    @app.get("/api/drift")
+    def drift(sensor: str = "s1", window_s: float = 900.0, horizon_min: float = 60.0) -> dict[str, Any]:
+        return views.drift(engine, sensor_or_400(sensor), window_s, horizon_min)
+
+    # -- REST: AI tools ------------------------------------------------------
+
+    @app.post("/api/tools/get_data")
+    def tool_get_data(req: ToolRequest) -> dict[str, Any]:
+        try:
+            return tools.get_data(engine, req.sensor, req.window_s or 10.0)
+        except EngineError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/tools/analyze")
+    def tool_analyze(req: ToolRequest) -> dict[str, Any]:
+        try:
+            return tools.analyze(engine, req.sensor, req.window_s or 60.0)
+        except EngineError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/tools/change_setting", dependencies=[Depends(require_token)])
+    def tool_change_setting(req: SettingRequest) -> dict[str, Any]:
+        return tools.change_setting(engine, req.sensor, req.name, req.value, req.confirmed)
+
+    # -- REST: voice and demo controls ---------------------------------------
+
+    @app.post("/api/realtime/session", dependencies=[Depends(require_token)])
+    async def realtime_session() -> dict[str, Any]:
+        try:
+            return await create_client_secret(settings)
+        except RealtimeError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.post("/api/demo/{kind}", dependencies=[Depends(require_token)])
+    def demo(kind: str, req: DemoRequest | None = None) -> dict[str, Any]:
+        req = req or DemoRequest()
+        try:
+            return engine.inject(kind, req.sensor, **req.params())
+        except EngineError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/auth/check", dependencies=[Depends(require_token)])
+    def auth_check() -> dict[str, bool]:
+        return {"ok": True}
+
+    # -- WebSockets ----------------------------------------------------------
+
+    async def serve_socket(ws: WebSocket, kind: str, hello: dict[str, Any]) -> None:
+        await ws.accept()
+        client = hub.add(ws, kind)
+        hub.send(client, hello)
+        pump = asyncio.create_task(hub.pump(client))
+        try:
+            while True:
+                message = await ws.receive_text()
+                if message == "ping":
+                    hub.send(client, {"type": "pong", "t": time.time()})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            pump.cancel()
+            hub.remove(client)
+
+    @app.websocket("/ws/cockpit")
+    async def ws_cockpit(ws: WebSocket) -> None:
+        await serve_socket(ws, COCKPIT, {"type": "hello", "config": public_config(),
+                                         "events": engine.recent_events(30),
+                                         "status": engine.status_message()})
+
+    @app.websocket("/ws/phone")
+    async def ws_phone(ws: WebSocket) -> None:
+        await serve_socket(ws, PHONE, {
+            "type": "hello",
+            "title": settings.cockpit.title,
+            "team": settings.cockpit.team,
+            "sensors": [{"id": s.id, "name": s.name} for s in settings.sensors],
+            "events": engine.recent_events(5),
+        })
+
+    # -- Frontend ------------------------------------------------------------
+
+    def frontend_file(name: str) -> FileResponse | HTMLResponse:
+        path = FRONTEND_DIST / name
+        if path.exists():
+            return FileResponse(path)
+        return HTMLResponse(
+            "<h1>Frontend not built</h1><p>Run <code>npm install</code> and <code>npm run build</code> "
+            "in the <code>frontend</code> folder, or use the dev server at "
+            "<a href='http://localhost:5173'>http://localhost:5173</a>.</p>", status_code=503)
+
+    @app.get("/", include_in_schema=False)
+    def index() -> Any:
+        return frontend_file("index.html")
+
+    @app.get("/phone", include_in_schema=False)
+    def phone() -> Any:
+        return frontend_file("phone.html")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def static_files(path: str) -> Any:
+        if path.startswith(("api/", "ws/")):
+            raise HTTPException(status_code=404)
+        candidate = (FRONTEND_DIST / path).resolve()
+        if FRONTEND_DIST.exists() and candidate.is_file() and FRONTEND_DIST.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        # "/phone/" or a doubled "/phone/phone" (QR scanners, pasted links) must
+        # still open the phone page, never the full cockpit
+        if path.rstrip("/").split("/")[0] == "phone":
+            return frontend_file("phone.html")
+        return frontend_file("index.html")
+
+    return app
+
+
+app = create_app()
