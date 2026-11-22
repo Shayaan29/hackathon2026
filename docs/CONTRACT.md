@@ -87,5 +87,25 @@ The voice model calls these; the browser runs them and returns the result.
 | `show_chart` | cockpit | `view`, `sensors`, `window_s` | `{"ok", "view", "sensors"}` |
 | `stage_control` | cockpit | `action`: `back` or `dismiss` | `{"ok"}` |
 | `change_setting` | backend | `sensor`, `name`, `value`, `confirmed` | old and new value, or an error |
+| `suggest_settings` | backend (cockpit opens the setup check) | `sensor` | measured noise, proposal, reasons, expected noise |
+| `create_report` | backend (cockpit opens the report) | `event_id` (optional, default latest) | id, title, url, likely causes, next steps |
 
 The rule for the voice model: it never says a number that did not come from a tool.
+
+
+## Added for the setup assistant, reports and shakes
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/assistant/{sensor}` | Measures the signal and proposes settings; includes a before/after preview of the last 2 s |
+| `POST /api/assistant/{sensor}/apply` | Applies the proposal (needs `X-Cockpit-Token`) |
+| `GET /api/reports/{event_id}` | Incident report as JSON (`latest` works too) |
+| `GET /report/{event_id}` | The same report as a printable page; `?embed=1` hides its own buttons |
+| `POST /api/demo/misconfigure` | Demo: sets averaging on a sensor to 2 so it is noisy |
+
+| Message | Direction | Fields |
+| --- | --- | --- |
+| `{"type": "shake", "name", "intensity"}` | phone to server | intensity 0 to 3 |
+| `{"type": "shake_ack", "ok", "reason"?, "retry_s"?}` | server to that phone | `reason`: `busy` or `unsupported` |
+| `{"type": "shake", "name", "sensor", "intensity", "t"}` | server to cockpits and phones | after a knock was applied |
+| `{"type": "report", "id", "title"}` | server to cockpits | a report was created by a tool call |

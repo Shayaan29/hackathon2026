@@ -27,6 +27,7 @@ class Client:
     ws: WebSocket
     kind: str
     queue: asyncio.Queue[str] = field(default_factory=lambda: asyncio.Queue(maxsize=400))
+    last_shake: float = 0.0
 
 
 class Hub:

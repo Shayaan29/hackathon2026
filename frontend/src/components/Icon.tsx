@@ -14,6 +14,10 @@ const PATHS: Record<string, string> = {
   wave: "M2 12h3l2-6 4 12 3-9 2 3h6",
   send: "M4 12 20 4l-6 16-3-7-7-1Z",
   power: "M12 3v8m-5.7-4.3a8 8 0 1 0 11.4 0",
+  doc: "M7 3h7l5 5v13H7V3Zm7 0v5h5M10 13h6M10 17h6",
+  mission: "M12 3v3m0 12v3M3 12h3m12 0h3M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-2a6 6 0 1 1 0 12 6 6 0 0 1 0-12Z",
+  play: "M8 5v14l11-7L8 5Z",
+  check: "M5 12.5 10 17l9-10",
 };
 
 export function Icon({ name, size = 18 }: { name: keyof typeof PATHS | string; size?: number }) {

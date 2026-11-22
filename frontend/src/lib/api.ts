@@ -1,5 +1,6 @@
 // Thin client for the backend REST API.
 import type {
+  AssistantPlan,
   ChartSpec,
   CockpitConfig,
   DriftData,
@@ -81,6 +82,12 @@ export const api = {
   changeSetting: (sensor: string, name: string, value: string | number, confirmed: boolean) =>
     post<Record<string, unknown>>("/api/tools/change_setting", { sensor, name, value, confirmed }),
   realtimeSession: () => post<RealtimeSession>("/api/realtime/session"),
+  assistant: (sensor: string) => request<AssistantPlan>(`/api/assistant/${encodeURIComponent(sensor)}`),
+  applyAssistant: (sensor: string) =>
+    post<{ ok: boolean; error?: string; summary?: string }>(`/api/assistant/${encodeURIComponent(sensor)}/apply`),
+  suggestSettings: (sensor: string) => post<Record<string, unknown>>("/api/tools/suggest_settings", { sensor }),
+  createReport: (eventId?: string) =>
+    post<{ ok: boolean; id?: string; title?: string; error?: string }>("/api/tools/create_report", { event_id: eventId }),
   demo: (kind: string, body: Record<string, unknown> = {}) =>
     post<Record<string, unknown>>(`/api/demo/${kind}`, body),
 };

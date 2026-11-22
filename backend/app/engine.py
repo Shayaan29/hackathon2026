@@ -26,7 +26,7 @@ from .sources import SensorSource, SimulatedSensor, SourceError, create_source
 
 log = logging.getLogger("cockpit.engine")
 
-DEMO_KINDS = ("tap", "vibration", "drift", "drift_stop", "noise", "dropout", "reset")
+DEMO_KINDS = ("tap", "vibration", "drift", "drift_stop", "noise", "dropout", "misconfigure", "reset")
 _NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
                  "eins": "1", "zwei": "2", "drei": "3", "vier": "4", "fünf": "5"}
 
@@ -260,8 +260,16 @@ class Engine:
             for source in self.sources.values():
                 if isinstance(source, SimulatedSensor):
                     source.inject("reset", now)
+            for cfg in self.settings.sensors:  # back to the configured settings
+                for name, spec in cfg.settings.items():
+                    if self.values[cfg.id].get(name) != spec.default:
+                        self.change_setting(cfg.id, name, spec.default)
             return {"ok": True, "kind": kind}
         sid = self.resolve_sensor(sensor)
+        if kind == "misconfigure":
+            # demo: someone left the sensor on a too-low averaging, so it is noisy
+            return {"ok": True, "kind": kind,
+                    **self.change_setting(sid, "averaging", params.get("value", 2))}
         try:
             if kind == "tap":
                 fixture = self.settings.sensor(sid).fixture

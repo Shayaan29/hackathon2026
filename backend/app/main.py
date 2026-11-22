@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, tools, views
+from . import __version__, assistant, report, tools, views
 from .config import FRONTEND_DIST, Settings, load_settings
 from .engine import DEMO_KINDS, Engine, EngineError
 from .hub import COCKPIT, PHONE, Hub
@@ -22,6 +23,9 @@ from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
                     datefmt="%H:%M:%S")
 log = logging.getLogger("cockpit")
+
+SHAKE_COOLDOWN_S = 6.0
+SHAKE_GLOBAL_S = 2.5
 
 
 class ToolRequest(BaseModel):
@@ -36,6 +40,10 @@ class SettingRequest(BaseModel):
     confirmed: bool = False
 
 
+class ReportRequest(BaseModel):
+    event_id: str | None = None
+
+
 class DemoRequest(BaseModel):
     sensor: str | None = None
     amplitude: float | None = None
@@ -45,6 +53,7 @@ class DemoRequest(BaseModel):
     factor: float | None = None
     duration_s: float | None = None
     share: float | None = None
+    value: float | None = None
 
     def params(self) -> dict[str, float]:
         return {k: v for k, v in self.model_dump().items() if k != "sensor" and v is not None}
@@ -147,6 +156,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def tool_change_setting(req: SettingRequest) -> dict[str, Any]:
         return tools.change_setting(engine, req.sensor, req.name, req.value, req.confirmed)
 
+    @app.post("/api/tools/suggest_settings")
+    def tool_suggest_settings(req: ToolRequest) -> dict[str, Any]:
+        try:
+            plan = assistant.suggest(engine, req.sensor)
+        except EngineError as exc:
+            return {"ok": False, "error": str(exc)}
+        plan.pop("preview", None)
+        return plan
+
+    @app.post("/api/tools/create_report")
+    def tool_create_report(req: ReportRequest) -> dict[str, Any]:
+        try:
+            rep = report.build(engine, req.event_id)
+        except report.ReportError as exc:
+            return {"ok": False, "error": str(exc)}
+        hub.broadcast({"type": "report", "id": rep["id"], "title": rep["title"]}, kinds=(COCKPIT,))
+        return {"ok": True, "id": rep["id"], "title": rep["title"], "url": f"/report/{rep['id']}",
+                "likely_causes": rep["causes"], "next_steps": rep["actions"],
+                "setup_check": rep["setup"]["summary"]}
+
+    # -- REST: setup assistant and incident reports -----------------------------
+
+    @app.get("/api/assistant/{sensor}")
+    def assistant_suggest(sensor: str) -> dict[str, Any]:
+        try:
+            return assistant.suggest(engine, sensor)
+        except EngineError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/assistant/{sensor}/apply", dependencies=[Depends(require_token)])
+    def assistant_apply(sensor: str) -> dict[str, Any]:
+        try:
+            return assistant.apply(engine, sensor)
+        except EngineError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/reports/{event_id}")
+    def report_json(event_id: str) -> dict[str, Any]:
+        try:
+            return report.build(engine, event_id)
+        except report.ReportError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/report/{event_id}", include_in_schema=False)
+    def report_page(event_id: str, embed: bool = False) -> HTMLResponse:
+        try:
+            return HTMLResponse(report.render_html(report.build(engine, event_id), embed=embed))
+        except report.ReportError as exc:
+            return HTMLResponse(f"<h1>No report</h1><p>{exc}</p>", status_code=404)
+
     # -- REST: voice and demo controls ---------------------------------------
 
     @app.post("/api/realtime/session", dependencies=[Depends(require_token)])
@@ -170,6 +229,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # -- WebSockets ----------------------------------------------------------
 
+    shake_state = {"last": 0.0}
+
+    def handle_phone_message(client: Any, raw: str) -> None:
+        """A judge shook their phone: knock the fixture, let the detector find it."""
+        try:
+            msg = json.loads(raw)
+        except ValueError:
+            return
+        if msg.get("type") != "shake":
+            return
+        now = time.time()
+        last_own = getattr(client, "last_shake", 0.0)
+        if now - last_own < SHAKE_COOLDOWN_S or now - shake_state["last"] < SHAKE_GLOBAL_S:
+            hub.send(client, {"type": "shake_ack", "ok": False, "reason": "busy",
+                              "retry_s": round(max(SHAKE_COOLDOWN_S - (now - last_own),
+                                                   SHAKE_GLOBAL_S - (now - shake_state["last"])), 1)})
+            return
+        name = " ".join(str(msg.get("name") or "").split())[:24] or "A judge"
+        try:
+            intensity = min(max(float(msg.get("intensity", 1.0)), 0.0), 3.0)
+        except (TypeError, ValueError):
+            intensity = 1.0
+        target = settings.sensors[0].id
+        try:
+            engine.inject("tap", target, amplitude=12.0 + 8.0 * intensity)
+        except EngineError as exc:
+            hub.send(client, {"type": "shake_ack", "ok": False, "reason": "unsupported", "detail": str(exc)})
+            return
+        client.last_shake = now
+        shake_state["last"] = now
+        log.info("shake from %s (intensity %.1f)", name, intensity)
+        hub.send(client, {"type": "shake_ack", "ok": True})
+        hub.broadcast({"type": "shake", "name": name, "sensor": target, "intensity": round(intensity, 2),
+                       "t": now}, kinds=(COCKPIT, PHONE))
+
     async def serve_socket(ws: WebSocket, kind: str, hello: dict[str, Any]) -> None:
         await ws.accept()
         client = hub.add(ws, kind)
@@ -180,6 +274,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 message = await ws.receive_text()
                 if message == "ping":
                     hub.send(client, {"type": "pong", "t": time.time()})
+                elif kind == PHONE and message.startswith("{"):
+                    handle_phone_message(client, message)
         except WebSocketDisconnect:
             pass
         finally:

@@ -1,10 +1,24 @@
 # KI Sensor Cockpit
 
-A voice copilot for Micro-Epsilon sensors. It watches the live data, speaks up
-when something is off, shows it in animated charts that fly back into a 3D
-stack, and pushes every alert to the judges' phones.
+A voice copilot for Micro-Epsilon sensors. It watches the live data in a 3D
+digital twin of the measuring setup, speaks up when something is off, explains
+it with charts, writes the incident report, fixes badly set up sensors, and
+lets the jury knock the machine from their own phones.
 
 ![Cockpit](docs/screenshot-cockpit.png)
+
+![Mission mode](docs/screenshot-mission.png)
+
+## What it does
+
+| Feature | What the jury sees |
+| --- | --- |
+| Digital twin | A live 3D model of the measuring setup. The laser beams draw the real triangulation geometry, move with the readings and turn amber or red with the sensor state. Alerts shake the gantry. |
+| Voice copilot | Ask in English or German. It answers with measured numbers only, shows charts and speaks up on its own when an alert comes in. |
+| Mission mode (**J**) | The lights go out: the same cockpit full screen and dark, glowing lasers, a HUD with dials, and charts that fly in by themselves after each alert. Made for the projector. |
+| Judges shake their phone | A judge shakes their phone (or taps Knock). The cockpit knocks the fixture, the real detection finds the vibration on every sensor of that fixture, and the copilot greets the judge by name. |
+| Incident report | One click or "write a report": likely causes, next steps, charts around the alert, a setup check and ticket text. Save as PDF, or scan the code to take it on a phone. |
+| Setup assistant | Reads a sensor's signal and proposes better settings (averaging, measuring rate) with the physics behind it, previews the result on the real last two seconds of data, applies it after a yes and then measures the improvement. |
 
 Everything runs on dummy data out of the box. To go live you replace data,
 not code: sensor names and tolerances in one YAML file, the API key in `.env`,
@@ -119,7 +133,10 @@ the safe switch if hardware misbehaves on stage.
 ```
 
 * **The AI never makes up numbers.** Python computes every value; the voice
-  model calls tools (`get_data`, `analyze`) and only phrases the answer.
+  model calls tools (`get_data`, `analyze`, `suggest_settings`, `create_report`)
+  and only phrases the answer.
+* **Shakes are real detections.** A phone shake knocks the simulated fixture;
+  the same rules that watch the real sensors find the vibration.
 * **Spoken alerts.** The backend detects an event, the cockpit chimes, and the
   event goes into the voice session as a `[MONITORING ALERT]` message, so the
   copilot speaks first, like Jarvis.
@@ -141,6 +158,8 @@ backend/
     analysis.py      signal maths (pure functions)
     views.py         data behind the four chart views
     tools.py         AI tools that run on the backend
+    assistant.py     setup assistant: settings proposal and preview on real data
+    report.py        incident reports as JSON and as a printable page
     realtime.py      voice: instructions, tool schemas, client secrets
     sources/         simulator, CSV replay, MEDAQLib template
   config/sensors.yaml   <- your sensors and thresholds
@@ -150,9 +169,10 @@ frontend/
   src/controller.ts  browser-side brain: alerts, voice, commands, tools
   src/lib/voice.ts   OpenAI Realtime over WebRTC with push-to-talk
   src/lib/commands.ts offline commands (English and German)
-  src/lib/charts.ts  ECharts views
-  src/components/    tiles, stage, alert banner, voice dock, demo panel, QR
-  src/phone/         the judges' phone page
+  src/lib/charts.ts  ECharts views (light and mission themes)
+  src/lib/twin.ts    the 3D digital twin (three.js)
+  src/components/    twin, readouts, chart stage, copilot, mission HUD, report, setup check
+  src/phone/         the judges' phone page: alerts, flashlight, shake detection
 docs/                contract, demo script, screenshots
 ```
 
@@ -163,11 +183,14 @@ docs/                contract, demo script, screenshots
 | Action | How |
 | --- | --- |
 | Talk | Hold **Space** or the mic button, speak, release |
-| Type a command | Bottom bar: "show me the last five minutes", "is the sensor broken?", "compare the sensors", "show the drift", "status", "go back" |
+| Type a command | Copilot box: "show me the last five minutes", "is the sensor broken?", "compare the sensors", "show the drift", "status", "write a report", "check the setup of sensor 1", "go back" |
+| Mission mode | **J**, the Mission mode button, or say "mission mode" |
+| Latest incident report | **R**, "Write report" on an alert, or say "write a report" |
+| Setup check | "Check it" under a sensor, "Check setup" in the conversation, or ask "is sensor 1 set up well?" |
 | Previous chart | **←** or say "go back" (the chart flies back into the stack) |
 | Dismiss chart | **Delete** or say "dismiss" (the chart turns to dust) |
 | Phone QR code | **Q** |
-| Demo controls | **D**, then **1** tap, **2** start drift, **3** stop drift, **4** noise burst, **5** dropout, **0** reset |
+| Demo controls | **D**, then **1** tap, **2** start drift, **3** stop drift, **4** noise burst, **5** dropout, **6** misconfigure sensor 1, **0** reset |
 | Sound on/off | **M** |
 | Hand gestures | Hand button in the top bar: open palm = back, fist = dismiss, thumbs up = confirm |
 
@@ -203,8 +226,15 @@ tunnel makes the cockpit reachable from anywhere.
 
 <img src="docs/screenshot-phone.png" alt="Phone alert" width="220">
 
-Phones flash, beep and (on Android) vibrate. iPhones do not let websites
-vibrate, so the flash and the sound carry the alert there.
+Phones flash, beep and (on Android) vibrate and blink the flashlight. iPhones
+do not let websites vibrate, so the flash and the sound carry the alert there.
+Every alert on a phone links to its incident report.
+
+**Shake the machine.** Judges can type their name when they join. "Shake the
+machine" asks for motion access (iPhones show a prompt), then three firm
+shakes knock the fixture. "Knock instead" does the same with a tap, for
+laptops and phones without a motion sensor. Shakes only work while the cockpit
+runs on simulated sensors, and each phone can knock once every few seconds.
 
 ### Hand gestures (optional)
 
@@ -217,7 +247,7 @@ cockpit loads the model from the internet when you switch gestures on.
 ## Tests
 
 ```powershell
-# 27 tests: analysis, alert rules, replay, API, WebSockets (on macOS/Linux: .venv/bin/python -m pytest)
+# 31 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes (on macOS/Linux: .venv/bin/python -m pytest)
 cd backend
 .\.venv\Scripts\python.exe -m pytest
 

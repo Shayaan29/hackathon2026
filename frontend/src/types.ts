@@ -107,7 +107,46 @@ export type ServerMessage =
   | SamplesMessage
   | CockpitEvent
   | SettingChangedMessage
+  | ShakeMessage
+  | { type: "report"; id: string; title: string }
   | { type: "pong"; t: number };
+
+export interface ShakeMessage {
+  type: "shake";
+  name: string;
+  sensor: string;
+  intensity: number;
+  t: number;
+}
+
+export interface SettingChange {
+  name: string;
+  from: string | number | null;
+  to: string | number;
+}
+
+export interface AssistantPlan {
+  sensor: string;
+  name: string;
+  unit: string;
+  status: "ok" | "improve";
+  summary: string;
+  current: Record<string, string | number>;
+  measured: {
+    noise: number | null;
+    normal_noise: number | null;
+    noise_limit: number;
+    noise_target: number;
+    invalid_share: number;
+    watch_frequency_hz: number;
+    bandwidth_hz: number | null;
+  };
+  proposal: SettingChange[];
+  reasons: string[];
+  expected: { noise: number | null; bandwidth_hz: number | null };
+  preview: { window_s: number; before: (number | null)[]; after: (number | null)[] };
+  t: number;
+}
 
 export interface ChartSpec {
   view: ChartView;

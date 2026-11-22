@@ -21,6 +21,13 @@ export class LiveSocket {
     this.open();
   }
 
+  /** Sends a text frame if connected; returns whether it went out. */
+  send(text: string): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(text);
+    return true;
+  }
+
   stop(): void {
     this.stopped = true;
     window.clearInterval(this.pingTimer);

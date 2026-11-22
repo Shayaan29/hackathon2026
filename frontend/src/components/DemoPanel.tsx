@@ -8,7 +8,8 @@ const ACTIONS: { key: string; label: string; kind: string; body: Record<string, 
   { key: "3", label: "Stop drift", kind: "drift_stop", body: { sensor: "s2" }, hint: "holds the offset" },
   { key: "4", label: "Noise burst", kind: "noise", body: { sensor: "s1", factor: 4, duration_s: 6 }, hint: "Sensor 1, 6 s" },
   { key: "5", label: "Dropout", kind: "dropout", body: { sensor: "s1", share: 0.5, duration_s: 3 }, hint: "invalid readings" },
-  { key: "0", label: "Reset", kind: "reset", body: {}, hint: "back to normal" },
+  { key: "6", label: "Misconfigure", kind: "misconfigure", body: { sensor: "s1" }, hint: "Sensor 1 averaging set to 2" },
+  { key: "0", label: "Reset", kind: "reset", body: {}, hint: "back to normal, settings too" },
 ];
 
 export function DemoPanel() {
@@ -45,7 +46,8 @@ export function DemoPanel() {
         <button className="btn" onClick={() => void controller.submitText("status")}>Status report</button>
       </div>
       <p className="demo-note">
-        Keys while open: 1–5 and 0. Elsewhere: Space talk, ← back, Del dismiss, Q phone QR, M sound.
+        Keys while this panel is open: 1 to 6 and 0. Anywhere: Space to talk, J for mission mode, R for the
+        latest report, ← back, Delete to dismiss a chart, Q for the phone code, M for sound.
       </p>
     </aside>
   );

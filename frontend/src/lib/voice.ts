@@ -183,11 +183,11 @@ export class RealtimeVoice {
   }
 
   /** Let the copilot speak up about an alert, without interrupting the operator. */
-  announce(event: CockpitEvent): void {
+  announce(event: CockpitEvent, note?: string): void {
     const prefix = this.session?.alert_prefix ?? "[MONITORING ALERT]";
     const facts = JSON.stringify({ sensor: event.sensor, kind: event.kind, severity: event.severity,
       numbers: event.numbers, forecast_minutes: event.forecast_min, also_seen_by: event.related_sensors });
-    const text = `${prefix} ${event.summary} Facts: ${facts}`;
+    const text = `${prefix} ${event.summary}${note ? ` ${note}` : ""} Facts: ${facts}`;
     if (this.responding || this.talking) {
       this.announceQueue.push(text);
       return;

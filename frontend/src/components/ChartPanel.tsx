@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { loadView } from "../lib/api";
 import { driftOption, echarts, historyOption, spectrumOption, type ChartOption } from "../lib/charts";
 import { ago, signed } from "../lib/format";
-import type { StagePanel } from "../state/store";
+import { useStore, type StagePanel } from "../state/store";
 import type { DriftData, HistoryData, SpectrumData, ViewData } from "../types";
 
 const OPACITY = [1, 0.5, 0.26, 0.12, 0.05];
@@ -27,7 +27,7 @@ function buildOption(data: ViewData): ChartOption {
 }
 
 function windowText(seconds: number): string {
-  return seconds >= 120 ? `last ${Math.round(seconds / 60)} min` : `last ${Math.round(seconds)} s`;
+  return seconds >= 120 ? `Last ${Math.round(seconds / 60)} minutes` : `Last ${Math.round(seconds)} seconds`;
 }
 
 function describe(data: ViewData | null, fallbackTitle: string): { title: string; detail: string; tone?: "warn" | "bad" } {
@@ -38,26 +38,26 @@ function describe(data: ViewData | null, fallbackTitle: string): { title: string
     const peak = d.peak && d.peak.prominence >= 6
       ? `clear peak at ${d.peak.frequency_hz.toFixed(0)} Hz`
       : "no dominant frequency";
-    return { title: `${d.name} · frequency spectrum`, detail: `${peak} · ${when}`, tone: d.peak && d.peak.prominence >= 6 ? "warn" : undefined };
+    return { title: `${d.name}: frequency spectrum`, detail: `${peak}, ${when}`, tone: d.peak && d.peak.prominence >= 6 ? "warn" : undefined };
   }
   if (data.view === "drift") {
     const d = data as DriftData;
-    if (!d.fit || Math.abs(d.fit.rate_per_min) < 1) return { title: `${d.name} · drift and forecast`, detail: "no steady drift" };
+    if (!d.fit || Math.abs(d.fit.rate_per_min) < 1) return { title: `${d.name}: drift and forecast`, detail: "No steady drift" };
     const minutes = d.forecast?.minutes_to_limit;
-    const eta = minutes !== null && minutes !== undefined ? ` · tolerance limit in ~${Math.round(minutes)} min` : "";
+    const eta = minutes !== null && minutes !== undefined ? `, tolerance limit in about ${Math.round(minutes)} min` : "";
     return {
-      title: `${d.name} · drift and forecast`,
+      title: `${d.name}: drift and forecast`,
       detail: `${signed(d.fit.rate_per_min, 1)} ${d.unit}/min${eta}`,
       tone: minutes !== null && minutes !== undefined && minutes < 10 ? "bad" : "warn",
     };
   }
   const h = data as HistoryData;
   if (h.view === "compare") {
-    return { title: h.series.map((s) => s.name).join(" vs "), detail: `${windowText(h.window_s)} · same time axis` };
+    return { title: h.series.map((s) => s.name).join(" vs "), detail: `${windowText(h.window_s)}, same time axis` };
   }
   const s = h.series[0];
   const last = [...(s?.values ?? [])].reverse().find((v) => v !== null);
-  return { title: `${s?.name ?? ""} · live`, detail: `${windowText(h.window_s)} · now ${signed(last ?? null, 2)} ${s?.unit ?? ""}` };
+  return { title: `${s?.name ?? ""}: live signal`, detail: `${windowText(h.window_s)}, now ${signed(last ?? null, 2)} ${s?.unit ?? ""}` };
 }
 
 export function ChartPanel({ panel, depth, register }: {
@@ -72,6 +72,7 @@ export function ChartPanel({ panel, depth, register }: {
   const [data, setData] = useState<ViewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [entered, setEntered] = useState(false);
+  const mission = useStore((s) => s.mission);
 
   useEffect(() => {
     register(panel.id, rootRef.current);
@@ -131,7 +132,7 @@ export function ChartPanel({ panel, depth, register }: {
     } else {
       inst.setOption({ ...option, animation: false }, { notMerge: true });
     }
-  }, [data]);
+  }, [data, mission]);
 
   const info = describe(data, panel.spec.view);
 

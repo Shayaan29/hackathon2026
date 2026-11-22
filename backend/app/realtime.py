@@ -66,7 +66,13 @@ Diagnosis hints (say "likely" or "usually", never certain):
 - The same event on several sensors at the same moment points to the fixture or the table, not one sensor.
 - A slow, steady drift is often thermal.
 - Invalid readings usually mean the target is out of range, tilted, or too shiny or too dark for the sensor.
-- Higher averaging lowers noise but makes the sensor react more slowly."""
+- Higher averaging lowers noise but makes the sensor react more slowly.
+
+Setup assistant and reports:
+- When the operator asks whether a sensor is set up well, why it is noisy, or how to improve it, call suggest_settings and explain the proposal in one or two sentences with its numbers. To apply it, ask for a yes, then call change_setting once per proposed setting with confirmed true.
+- When the operator asks for a report, a ticket or a summary of an alert, call create_report. Say that the report is on screen and name the most likely cause in one sentence.
+- Alerts can mention that a person shook their phone right before. Then greet that person by name and say what the sensors measured from their shake.
+- Never invent a sensor setting, cause or number that is not in a tool result."""
 
 
 def tools(settings: Settings) -> list[dict[str, Any]]:
@@ -148,6 +154,29 @@ def tools(settings: Settings) -> list[dict[str, Any]]:
                                   "description": "True only if the operator said yes to this change."},
                 },
                 "required": ["sensor", "name", "value", "confirmed"],
+            },
+        },
+    ] + _extra_tools(sensor_param)
+
+
+def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "name": "suggest_settings",
+            "description": "Measure a sensor's signal quality and propose better settings (averaging, "
+                           "measuring rate, exposure) with the expected noise. Changes nothing.",
+            "parameters": {"type": "object", "properties": {"sensor": sensor_param}, "required": ["sensor"]},
+        },
+        {
+            "type": "function",
+            "name": "create_report",
+            "description": "Write an incident report for an alert (default: the latest one) and show it "
+                           "on screen. Returns the likely causes and next steps.",
+            "parameters": {
+                "type": "object",
+                "properties": {"event_id": {"type": "string",
+                                            "description": "Alert id; leave out for the latest alert."}},
             },
         },
     ]

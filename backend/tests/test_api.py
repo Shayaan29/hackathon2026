@@ -115,7 +115,8 @@ def test_client_secret_request(settings):
     assert session["type"] == "realtime" and session["model"] == settings.realtime_model
     essential = session_updates(settings)[0]["session"]
     assert {t["name"] for t in essential["tools"]} == {
-        "get_data", "analyze", "show_chart", "stage_control", "change_setting"}
+        "get_data", "analyze", "show_chart", "stage_control", "change_setting",
+        "suggest_settings", "create_report"}
     assert essential["audio"]["input"]["turn_detection"] is None
 
 

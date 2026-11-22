@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef } from "react";
 import { controller } from "../controller";
 import { dissolve } from "../lib/particles";
 import { useStore } from "../state/store";
-import { AlertBanner } from "./AlertBanner";
 import { ChartPanel } from "./ChartPanel";
 
 export function Stage() {
@@ -43,13 +42,11 @@ export function Stage() {
       })}
       {stage.length === 0 && (
         <div className="stage-empty">
-          <div className="stage-empty-title">Ask for a chart</div>
-          <div>"Show me the last five minutes" · hold Space to talk</div>
+          <div className="stage-empty-title">Charts appear here</div>
+          <div>Ask for one, for example “show me the last five minutes”.</div>
         </div>
       )}
       <canvas className="dust" ref={dustRef} />
-      <AlertBanner />
-      <div className="stage-hint">← back · Del dismiss · Space talk</div>
     </section>
   );
 }

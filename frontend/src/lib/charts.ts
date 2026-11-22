@@ -27,26 +27,40 @@ echarts.use([
 export { echarts };
 export type ChartOption = echarts.EChartsCoreOption;
 
-export const COLORS = {
-  text: "#9fb3c8",
-  dim: "#5b7083",
-  grid: "rgba(120, 180, 220, 0.09)",
-  axis: "rgba(120, 180, 220, 0.25)",
-  cyan: "#22d3ee",
-  violet: "#a78bfa",
-  amber: "#fbbf24",
-  red: "#fb4f6b",
-  green: "#34d399",
-  series: ["#22d3ee", "#a78bfa", "#34d399", "#fbbf24"],
+// Two themes: the light measuring-room cockpit and the dark mission mode.
+// Option builders read these objects, so a theme switch only needs a redraw.
+const LIGHT = {
+  text: "#4f5d6b", dim: "#7d8a97", grid: "rgba(21, 32, 43, 0.07)", axis: "rgba(21, 32, 43, 0.22)",
+  cyan: "#5a3ff2", violet: "#8a7cf8", amber: "#e08a00", red: "#d7263d", green: "#138a5e",
+  series: ["#5a3ff2", "#e0567a", "#138a5e", "#e08a00"],
 };
-
-const SEVERITY_FILL: Record<Severity, string> = {
-  info: "rgba(34, 211, 238, 0.14)",
-  warning: "rgba(251, 191, 36, 0.16)",
-  critical: "rgba(251, 79, 107, 0.2)",
+const DARK = {
+  text: "#a9b8d0", dim: "#6d7c95", grid: "rgba(150, 170, 255, 0.08)", axis: "rgba(150, 170, 255, 0.24)",
+  cyan: "#8f80ff", violet: "#c4b8ff", amber: "#ffb020", red: "#ff4d63", green: "#2ed39a",
+  series: ["#8f80ff", "#ff7aa2", "#2ed39a", "#ffb020"],
 };
+export const COLORS = { ...LIGHT, series: [...LIGHT.series] };
+const SEVERITY_FILL: Record<Severity, string> = { info: "", warning: "", critical: "" };
+const THEME = { tipBg: "", tipBorder: "", tipText: "", pointer: "", nowLine: "", labelBg: "", dark: false };
 
-const FONT = "'JetBrains Mono', 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace";
+export function setChartTheme(dark: boolean): void {
+  const src = dark ? DARK : LIGHT;
+  Object.assign(COLORS, { ...src, series: [...src.series] });
+  SEVERITY_FILL.info = hexToRgba(COLORS.cyan, dark ? 0.16 : 0.1);
+  SEVERITY_FILL.warning = hexToRgba(COLORS.amber, dark ? 0.18 : 0.13);
+  SEVERITY_FILL.critical = hexToRgba(COLORS.red, dark ? 0.22 : 0.13);
+  Object.assign(THEME, {
+    dark,
+    tipBg: dark ? "rgba(8, 10, 28, 0.94)" : "rgba(255, 255, 255, 0.97)",
+    tipBorder: hexToRgba(COLORS.cyan, 0.4),
+    tipText: dark ? "#eef0ff" : "#15202b",
+    pointer: hexToRgba(COLORS.cyan, 0.5),
+    nowLine: dark ? "rgba(238, 240, 255, 0.35)" : "rgba(21, 32, 43, 0.3)",
+    labelBg: dark ? "rgba(8, 10, 28, 0.9)" : "rgba(255, 255, 255, 0.95)",
+  });
+}
+
+const FONT = "'IBM Plex Sans Condensed', 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif";
 const HIDDEN = "_"; // series whose name starts with this stay out of tooltips and legends
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -54,13 +68,15 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+setChartTheme(false);
+
 function tooltip(unit: string): Record<string, unknown> {
   return {
     trigger: "axis",
-    backgroundColor: "rgba(6, 14, 24, 0.94)",
-    borderColor: "rgba(34, 211, 238, 0.35)",
-    textStyle: { color: "#e6f6ff", fontFamily: FONT, fontSize: 12 },
-    axisPointer: { lineStyle: { color: "rgba(34, 211, 238, 0.5)" } },
+    backgroundColor: THEME.tipBg,
+    borderColor: THEME.tipBorder,
+    textStyle: { color: THEME.tipText, fontFamily: FONT, fontSize: 13 },
+    axisPointer: { lineStyle: { color: THEME.pointer } },
     formatter: (params: unknown) => {
       const list = (Array.isArray(params) ? params : [params]) as {
         seriesName: string;
@@ -297,8 +313,8 @@ export function spectrumOption(data: SpectrumData): ChartOption {
         itemStyle: { color: COLORS.cyan },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(34, 211, 238, 0.35)" },
-            { offset: 1, color: "rgba(34, 211, 238, 0.02)" },
+            { offset: 0, color: hexToRgba(COLORS.cyan, 0.35) },
+            { offset: 1, color: hexToRgba(COLORS.cyan, 0.02) },
           ]),
         },
         markPoint: peak
@@ -364,7 +380,7 @@ export function driftOption(data: DriftData): ChartOption {
           silent: true,
           symbol: "none",
           data: [
-            { xAxis: 0, lineStyle: { color: "rgba(230, 246, 255, 0.35)", type: "solid", width: 1 }, label: { show: false } },
+            { xAxis: 0, lineStyle: { color: THEME.nowLine, type: "solid", width: 1 }, label: { show: false } },
             { yAxis: data.tolerance.high, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
               label: { color: COLORS.red, fontSize: 10, position: "insideStartTop", formatter: tolLabel(data.tolerance.high) } },
             { yAxis: data.tolerance.low, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
@@ -391,7 +407,7 @@ export function driftOption(data: DriftData): ChartOption {
                 color: COLORS.red,
                 fontSize: 12,
                 fontWeight: "bold",
-                backgroundColor: "rgba(5, 12, 21, 0.9)",
+                backgroundColor: THEME.labelBg,
                 padding: [3, 7],
                 borderRadius: 4,
                 formatter: `limit in ~${Math.round(minutes ?? crossing.t_rel / 60)} min`,

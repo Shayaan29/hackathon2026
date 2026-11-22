@@ -29,6 +29,21 @@ export interface Toast {
   tone: "info" | "ok" | "warn" | "error";
 }
 
+export type FeedItem =
+  | { id: string; t: number; type: "alert"; event: CockpitEvent }
+  | { id: string; t: number; type: "say"; who: Caption["who"]; text: string; final: boolean }
+  | { id: string; t: number; type: "shake"; name: string; sensor: string }
+  | { id: string; t: number; type: "setting"; sensor: string; text: string }
+  | { id: string; t: number; type: "report"; reportId: string; title: string }
+  | { id: string; t: number; type: "setup"; sensor: string; text: string };
+
+export interface ShakeInfo {
+  name: string;
+  sensor: string;
+  t: number;
+  intensity: number;
+}
+
 export interface PendingChange {
   sensor: string;
   name: string;
@@ -57,10 +72,18 @@ interface CockpitStore {
   gesture: string | null;
   tokenOk: boolean | null;
   publicUrl: string;
+  mission: boolean;
+  missionSince: number;
+  feed: FeedItem[];
+  reportId: string | null;
+  assistantFor: string | null;
+  hints: Record<string, "ok" | "improve">;
+  lastShake: ShakeInfo | null;
 
   patch: (partial: Partial<CockpitStore>) => void;
   addEvent: (event: CockpitEvent) => void;
   addCaption: (who: Caption["who"], text: string, final?: boolean) => void;
+  pushFeed: (item: FeedItem) => void;
   toast: (text: string, tone?: Toast["tone"]) => void;
   pushPanel: (spec: ChartSpec) => StagePanel;
   markLeaving: (id: string, mode: "forward" | "dust") => void;
@@ -99,22 +122,42 @@ export const useStore = create<CockpitStore>((set, get) => ({
   gesture: null,
   tokenOk: null,
   publicUrl: storedPublicUrl(),
+  mission: false,
+  missionSince: 0,
+  feed: [],
+  reportId: null,
+  assistantFor: null,
+  hints: {},
+  lastShake: null,
 
   patch: (partial) => set(partial),
 
   addEvent: (event) =>
-    set((s) => (s.events.some((e) => e.id === event.id) ? s : { events: [...s.events, event].slice(-200) })),
+    set((s) => (s.events.some((e) => e.id === event.id) ? s : {
+      events: [...s.events, event].slice(-200),
+      feed: [...s.feed, { id: `e-${event.id}`, t: event.t, type: "alert" as const, event }].slice(-80),
+    })),
+
+  pushFeed: (item) =>
+    set((s) => ({ feed: [...s.feed.filter((f) => f.id !== item.id), item].slice(-80) })),
 
   addCaption: (who, text, final = true) =>
     set((s) => {
       const captions = [...s.captions];
       const last = captions[captions.length - 1];
+      let id: number;
       if (last && last.who === who && !last.final) {
         captions[captions.length - 1] = { ...last, text, final };
+        id = last.id;
       } else {
-        captions.push({ id: nextId++, who, text, final });
+        id = nextId++;
+        captions.push({ id, who, text, final });
       }
-      return { captions: captions.slice(-6) };
+      const feedId = `c-${id}`;
+      const existing = s.feed.find((f) => f.id === feedId);
+      const item = { id: feedId, t: existing?.t ?? Date.now() / 1000, type: "say" as const, who, text, final };
+      const feed = existing ? s.feed.map((f) => (f.id === feedId ? item : f)) : [...s.feed, item].slice(-80);
+      return { captions: captions.slice(-6), feed };
     }),
 
   toast: (text, tone = "info") => {

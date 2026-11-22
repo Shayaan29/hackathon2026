@@ -3,6 +3,7 @@
 import { api, ApiError, getToken, initToken, setToken } from "./lib/api";
 import { parseCommand, phrase, windowWords, type Intent, type Lang } from "./lib/commands";
 import { KIND_LABEL } from "./lib/format";
+import { setChartTheme } from "./lib/charts";
 import { ingest, meters, setServerTime } from "./lib/live";
 import { LiveSocket } from "./lib/socket";
 import { alarm, blip, chime, confirmSound, dissolveSound, setSoundEnabled, unlockAudio, whoosh } from "./lib/sound";
@@ -45,6 +46,58 @@ class Controller {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("pointerdown", unlockAudio, { once: true });
+    window.setInterval(() => void this.refreshHints(), 8000);
+    window.setTimeout(() => void this.refreshHints(), 3000);
+  }
+
+  // -- mission mode, reports, setup assistant ---------------------------
+
+  toggleMission(on = !store().mission): void {
+    if (on === store().mission) return;
+    setChartTheme(on);
+    whoosh(!on, 0.9);
+    window.clearTimeout(this.missionChartTimer);
+    // mission mode starts on the machine; charts fly in when something happens
+    if (on) store().patch({ stage: [] });
+    store().patch({ mission: on, missionSince: on ? Date.now() : store().missionSince });
+    const first = store().config?.sensors[0]?.id;
+    if (!on && !store().stage.length && first) this.show({ view: "timeseries", sensors: [first], window_s: 300 }, true);
+  }
+
+  private missionChartTimer = 0;
+
+  openReport(eventId?: string): void {
+    const id = eventId ?? store().events[store().events.length - 1]?.id;
+    if (!id) {
+      store().toast("No alert yet, so there is nothing to report.", "info");
+      return;
+    }
+    store().patch({ reportId: id, assistantFor: null });
+  }
+
+  openAssistant(sensor?: string): void {
+    store().patch({ assistantFor: this.resolveSensor(sensor ?? this.lastSensor ?? this.firstSensor()), reportId: null });
+  }
+
+  /** Quietly checks every sensor's setup, so the cockpit can offer a fix on its own. */
+  async refreshHints(): Promise<void> {
+    const config = store().config;
+    if (!config || document.hidden) return;
+    const hints = { ...store().hints };
+    for (const sensor of config.sensors) {
+      try {
+        const plan = await api.assistant(sensor.id);
+        const before = hints[sensor.id];
+        hints[sensor.id] = plan.status;
+        if (plan.status === "improve" && before !== "improve") {
+          store().pushFeed({ id: `setup-${sensor.id}-${Math.round(plan.t)}`, t: plan.t, type: "setup",
+            sensor: sensor.id, text: plan.summary });
+        }
+      } catch {
+        /* backend busy or restarting; try again next round */
+      }
+    }
+    store().patch({ hints });
   }
 
   registerStage(stageApi: StageApi | null): void {
@@ -95,7 +148,20 @@ class Controller {
         this.onEvent(message);
         break;
       case "setting_changed":
-        store().toast(`${this.sensorName(message.sensor)}: ${message.name} ${message.old} → ${message.new}`, "ok");
+        store().pushFeed({ id: `set-${message.sensor}-${message.name}-${message.t}`, t: message.t, type: "setting",
+          sensor: message.sensor,
+          text: `${this.sensorName(message.sensor)}: ${message.name.replace(/_hz$/, "").replace(/_/g, " ")} changed from ${message.old} to ${message.new}` });
+        window.setTimeout(() => void this.refreshHints(), 4000);
+        break;
+      case "shake":
+        store().patch({ lastShake: { name: message.name, sensor: message.sensor, t: message.t, intensity: message.intensity } });
+        store().pushFeed({ id: `shake-${message.t}`, t: message.t, type: "shake", name: message.name, sensor: message.sensor });
+        blip(true);
+        break;
+      case "report":
+        store().pushFeed({ id: `rep-${message.id}-${Date.now()}`, t: Date.now() / 1000, type: "report",
+          reportId: message.id, title: message.title });
+        store().patch({ reportId: message.id, assistantFor: null });
         break;
       default:
         break;
@@ -113,11 +179,23 @@ class Controller {
     }
     if (event.severity === "critical") alarm();
     else chime();
+    if (store().mission) {
+      // hands-free pitch: the matching chart follows the alert, and clears itself later
+      window.setTimeout(() => this.showForEvent(event, true), 2600);
+      window.clearTimeout(this.missionChartTimer);
+      this.missionChartTimer = window.setTimeout(() => {
+        if (store().mission) this.dismiss();
+      }, 26000);
+    }
     if (!store().speakAlerts) return;
+    const shake = store().lastShake;
+    const byShake = shake && event.kind === "vibration" && Math.abs(event.t - shake.t) < 5 ? shake : null;
     if (this.voice?.connected) {
-      this.voice.announce(event);
+      this.voice.announce(event, byShake ? `This vibration came right after ${byShake.name} shook their phone.` : undefined);
     } else {
-      window.setTimeout(() => this.say(event.summary, "en"), 450);
+      const text = byShake ? `${byShake.name}, that was you. ${event.summary}` : event.summary;
+      // the alert is already in the conversation, so it is only spoken, not repeated
+      window.setTimeout(() => this.say(text, "en", false), 450);
     }
   }
 
@@ -155,8 +233,8 @@ class Controller {
     return true;
   }
 
-  showForEvent(event: CockpitEvent): void {
-    store().patch({ alert: null });
+  showForEvent(event: CockpitEvent, keepAlert = false): void {
+    if (!keepAlert) store().patch({ alert: null });
     switch (event.kind) {
       case "vibration":
         this.show({ view: "spectrum", sensors: [event.sensor], event_id: event.id });
@@ -295,6 +373,15 @@ class Controller {
       }
       case "stage_control":
         return args.action === "dismiss" ? { ok: this.dismiss() } : { ok: this.back() };
+      case "suggest_settings": {
+        this.lastSensor = sensor;
+        this.openAssistant(sensor);
+        return api.suggestSettings(sensor);
+      }
+      case "create_report": {
+        const eventId = typeof args.event_id === "string" && args.event_id ? args.event_id : undefined;
+        return api.createReport(eventId);
+      }
       case "change_setting": {
         try {
           const result = await api.changeSetting(sensor, String(args.name), String(args.value), Boolean(args.confirmed));
@@ -314,6 +401,22 @@ class Controller {
   async handleLocal(text: string): Promise<void> {
     const config = store().config;
     if (!config) return;
+    const lower = text.toLowerCase();
+    if (/\b(report|bericht|ticket)\b/.test(lower)) {
+      const result = await api.createReport();
+      if (!result.ok) this.say(result.error ?? "There is no alert to report yet.");
+      else this.say(`The report on ${result.title} is on screen.`);
+      return;
+    }
+    if (/\b(set ?up|optimi[sz]e|einstellung|improve|configure)\b/.test(lower)) {
+      const mentioned = config.sensors.find((s) => lower.includes(s.name.toLowerCase()) || lower.includes(s.id));
+      this.openAssistant(mentioned?.id);
+      return;
+    }
+    if (/\b(mission|jarvis)\b/.test(lower)) {
+      this.toggleMission();
+      return;
+    }
     const { intent, lang } = parseCommand(text, {
       sensors: config.sensors,
       events: store().events,
@@ -408,8 +511,8 @@ class Controller {
   }
 
   /** Caption plus browser speech (offline mode and alert fallback). */
-  say(text: string, lang: Lang = "en"): void {
-    store().addCaption("ai", text, true);
+  say(text: string, lang: Lang = "en", caption = true): void {
+    if (caption) store().addCaption("ai", text, true);
     if (!store().soundOn) {
       store().patch({ activity: "idle" });
       return;
@@ -510,7 +613,16 @@ class Controller {
         this.toggleSound();
         break;
       case "Escape":
-        s.patch({ qrOpen: false, demoOpen: false, alert: null });
+        if (s.reportId || s.assistantFor) s.patch({ reportId: null, assistantFor: null });
+        else s.patch({ qrOpen: false, demoOpen: false, alert: null });
+        break;
+      case "j":
+      case "J":
+        this.toggleMission();
+        break;
+      case "r":
+      case "R":
+        this.openReport();
         break;
       default:
         if (s.demoOpen) this.demoHotkey(event.key);
@@ -531,6 +643,7 @@ class Controller {
       "3": () => void this.demo("drift_stop", { sensor: "s2" }),
       "4": () => void this.demo("noise", { sensor: "s1" }),
       "5": () => void this.demo("dropout", { sensor: "s1" }),
+      "6": () => void this.demo("misconfigure", { sensor: "s1" }),
       "0": () => void this.demo("reset"),
     };
     actions[key]?.();
