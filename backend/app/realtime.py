@@ -74,6 +74,13 @@ Setup assistant and reports:
 - Alerts can mention that a person shook their phone right before. Then greet that person by name and say what the sensors measured from their shake.
 - Never invent a sensor setting, cause or number that is not in a tool result.
 
+Recordings and incidents:
+- A recording is a file the operator loaded. Its incidents are the anomalies found by analysing the whole file, in time order.
+- For what happened in the recording, or which incidents there are, call list_incidents. Name the count, then the first few with their time, sensor and kind.
+- To explain one incident, or to say what to check, call investigate_incident with its id. Then explain in the order of the returned explanation, one short sentence per point. The cockpit opens that incident and highlights it on the chart and on the twin while you speak.
+- Call the checks what they are: checks to carry out. Never state a cause as fact.
+- Mention an item under not_known_from_file when it limits the answer, for example an unknown spindle speed.
+
 Charts:
 - Pick the chart that answers the question. Distribution or capability: make_chart histogram. Calm or unsettled periods, morning against afternoon, or comparing spread: make_chart boxplot (group_by hour, 10min, minute or sensor). Whether two sensors move together: make_chart scatter. Ranking sensors by noise, average, spread or alerts: make_chart bar. Live signal, comparison, spectrum or drift: show_chart.
 - make_chart returns findings. Say the most important one in one or two sentences.
@@ -220,6 +227,26 @@ def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {"event_id": {"type": "string",
                                             "description": "Alert id; leave out for the latest alert."}},
+            },
+        },
+        {
+            "type": "function",
+            "name": "list_incidents",
+            "description": "List the incidents found in the loaded recording, in time order, with id, kind, time, "
+                           "sensor and severity. Says so if no recording is analysed yet.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+        {
+            "type": "function",
+            "name": "investigate_incident",
+            "description": "Explain one incident of the loaded recording: why it was flagged, the checks the rules "
+                           "ran with their results, the suggested checks with reasons, what the file does not tell "
+                           "and where on the part it happened. The cockpit opens the incident and highlights it. "
+                           "Leave out incident_id for the first incident.",
+            "parameters": {
+                "type": "object",
+                "properties": {"incident_id": {"type": "string",
+                                               "description": "Incident id such as INC-003, from list_incidents."}},
             },
         },
     ]

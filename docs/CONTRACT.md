@@ -175,3 +175,97 @@ history (`"historic": true` on those events); real sources start empty.
 | `make_chart` | backend data, cockpit shows it | `chart`, `sensors`, `window_s`, `group_by`, `metric` | `{"ok", "chart", "findings"}`: the step texts |
 | `explain_chart` | cockpit | none | `{"ok", "steps"}` for the chart in front; the cockpit reveals each marker while the copilot speaks |
 | `show_shift` | cockpit | `sensor`, `event_id` (optional) | `{"ok", "incidents", "overview"}`; with `event_id` it flies to that incident |
+| `list_incidents` | backend | none | `{"ok", "available", "total", "incidents", "recording"}`, see below |
+| `investigate_incident` | backend (cockpit opens the incident) | `incident_id` (optional, default the first) | `{"ok", "speak_rule", "incident"}`, or `{"ok": false, "error"}` |
+
+## Added for recordings and incidents
+
+A file loaded through **Load file** in the top bar, or through the endpoints
+below, is read on the server. The whole file is checked with the same rules as
+the live sensors. Each incident carries its evidence, the checks it ran, an
+explanation, checks to carry out, what the file does not tell, and a snapshot of
+the data around it. Writes need `X-Cockpit-Token`; reads are open.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/recording/inspect` | The raw file as the body, with `Content-Type: application/octet-stream` and its name URL-encoded in `X-File-Name`. Returns `layout`, `mapping`, `preview`, `warnings` and `file`. 422 if the file cannot be read |
+| POST | `/api/recording/analyse` | `{"mapping": {...}, "rate_hz": null}`. Analyses the file from the last inspect and returns 202. 409 while another analysis runs. The top-level `rate_hz` is the analysis rate (default 500 Hz). The file's own sample rate goes into `mapping.rate_hz` |
+| GET | `/api/recording/status` | `state` (`idle`, `running`, `done` or `error`), `progress` (0 to 1), `message`, `error`, `result` (`stats`, `warnings`, `source`), `recording` and `playbook_error` |
+| POST | `/api/recording/restore` | Puts the simulator back and clears the incidents |
+| GET | `/api/incidents` | `incidents` (short rows), `stats`, `source`, `warnings` and `recording` |
+| GET | `/api/incidents/{id}` | One full incident, see below. 404 if the id is unknown |
+| POST | `/api/incidents/{id}/acknowledge` | Sets `status` to `acknowledged` and returns the short row |
+| GET | `/api/incidents/{id}/csv` | The data around the incident: semicolons, decimal commas, `time_s` counted from the start of the recording |
+| GET | `/api/incidents/{id}/report` | The incident report as HTML. For the demo file it says "Simulated demo data." |
+| GET | `/report/incident/{id}` | The same report as a page of its own |
+| POST | `/api/tools/list_incidents` | The copilot's tool, see below |
+| POST | `/api/tools/investigate_incident` | The copilot's tool, see below |
+
+The sheet sends a mapping of this shape. `part_rpm` 0 means unknown. A tolerance
+has `tolerance_source` `placeholder` until its limits are typed, then `entered`.
+
+```json
+{"delimiter": ";", "decimal": ",", "data_line": 0, "time_index": 0, "time_unit": "s",
+ "rate_hz": null, "part_rpm": 8.6,
+ "sensors": [{"index": 1, "include": true, "name": "Sensor 1", "unit": "µm",
+              "tolerance_low": -40, "tolerance_high": 40, "tolerance_source": "placeholder",
+              "fixture": "recording", "zero": "start"}]}
+```
+
+Status while a recording plays. The same object is in `/api/status` and in the
+status message. `started_at` is the server time at which sample 0 started to play.
+Restoring the simulator sends `{"type": "recording", "active": false}`.
+
+```json
+{"type": "recording", "active": true, "name": "demo_recording.csv", "rate_hz": 500, "duration_s": 130.0,
+ "started_at": 1764250000.0, "incidents": 5, "rows": 65000, "hidden_columns": [],
+ "source": {...}, "slots": [...]}
+```
+
+An incident in a list (`/api/incidents`, and the `incidents` of `list_incidents`):
+
+```json
+{"id": "INC-002", "title": "Drift on Sensor 2 at 01:07.248", "kind": "drift", "kinds": ["drift"],
+ "severity": "warning", "status": "open", "t": 67.248, "t_text": "01:07.248", "sensor": "s2",
+ "sensor_name": "Sensor 2", "related": [], "repeats": 1,
+ "summary": "Sensor 2 is drifting +6.2 µm per minute; at this rate it leaves tolerance in about 6 minutes."}
+```
+
+`kind` is one of `vibration`, `noise`, `drift`, `out_of_range`, `invalid`. `status`
+is `open` or `acknowledged`. `t` is seconds from the start of the recording.
+
+One incident (`/api/incidents/{id}`) has the same fields, and in addition:
+
+| Field | What it holds |
+| --- | --- |
+| `numbers` | The measured numbers the title and summary use |
+| `forecast_min` | Minutes to the limit, when a drift is found |
+| `highlight` | `{"from_s", "to_s"}`: the window the chart shades |
+| `window` | `{"from_s", "to_s"}`: the data included in the snapshot |
+| `checks` | `[{"label", "value", "status", "detail"}]`. `status` is `found`, `not_found`, `info` or `unknown`. `not_found` means the rule did not see the pattern, not an error |
+| `explanation` | The explanation, one sentence per line, in order |
+| `suggestions` | `[{"text", "reason"}]`: checks to carry out, from the playbook, each with its reason |
+| `unknown` | What the file does not tell, one sentence per line |
+| `location` | `sensor`, `sensor_name`, `twin_side`, `part_angle_deg` (null when the part speed is unknown), `turn`, `time_of_peak_s`, `twin_angle_deg` |
+| `recurrence` | `count` and `median_interval_s` for the same kind on the same sensor |
+| `snapshot` | `t0`, `rate_hz` and `sensors` (`id`, `name`, `unit`, `tolerance`, `values`). A `null` value is an invalid reading |
+| `source` | The recording: name, rate, and the part speed it was analysed with |
+
+Suggested checks come from `backend/config/playbook.yaml`: one list for each kind
+of alert, plus `all`. Each entry has a `text`, a `reason` filled in with the
+measured numbers, and optionally `needs_frequency: true`, which hides the check
+when no clear frequency was found. A value the file does not give is printed as
+"unknown", never as a guess.
+
+The copilot's tools:
+
+| Tool | Returns |
+| --- | --- |
+| `list_incidents` (no arguments) | `{"ok": true, "available": true, "total", "incidents" (up to 12 short rows), "recording"}`. `available` is false when no recording is analysed |
+| `investigate_incident` (`incident_id` optional) | `{"ok": true, "speak_rule", "incident": {id, title, kind, kinds, severity, status, time, sensor, related, summary, numbers, checks, explanation, suggested_checks, location, not_known_from_file, highlight}}`. The `speak_rule` tells the model to speak only numbers that appear in the result, and to call the checks checks to carry out, not a diagnosis |
+
+Errors: 422 for a file or a mapping that cannot be read, 409 while an analysis
+runs, 404 for an unknown incident id.
+
+The chart the cockpit shows for an incident is the chart view `incident`, with
+its `event_id`: `{"view": "incident", "sensors": ["s2"], "event_id": "INC-002"}`.

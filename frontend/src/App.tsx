@@ -4,8 +4,10 @@ import { AssistantPanel } from "./components/AssistantPanel";
 import { Copilot } from "./components/Copilot";
 import { DemoPanel } from "./components/DemoPanel";
 import { Header } from "./components/Header";
+import { IncidentDock } from "./components/IncidentDock";
 import { MissionHud } from "./components/MissionHud";
 import { QrOverlay } from "./components/QrOverlay";
+import { RecordingSheet } from "./components/RecordingSheet";
 import { ReportModal } from "./components/ReportModal";
 import { SensorStrip } from "./components/SensorStrip";
 import { Stage } from "./components/Stage";
@@ -50,6 +52,8 @@ export default function App() {
       {qrOpen && <QrOverlay />}
       <ReportModal />
       <AssistantPanel />
+      <RecordingSheet />
+      <IncidentDock />
       {gesturesOn && (
         <Suspense fallback={null}>
           <GestureControl />

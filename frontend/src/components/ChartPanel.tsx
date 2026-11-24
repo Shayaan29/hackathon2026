@@ -2,12 +2,14 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { controller } from "../controller";
 import { loadView } from "../lib/api";
 import {
-  barOption, boxplotOption, driftOption, echarts, histogramOption, historyOption, scatterOption, spectrumOption,
-  withAnnotations, type ChartOption,
+  barOption, boxplotOption, driftOption, echarts, histogramOption, historyOption, incidentOption, scatterOption,
+  spectrumOption, withAnnotations, type ChartOption,
 } from "../lib/charts";
 import { ago, signed } from "../lib/format";
 import { useStore, type StagePanel } from "../state/store";
-import type { BarData, BoxplotData, DriftData, HistogramData, HistoryData, ScatterData, SpectrumData, ViewData } from "../types";
+import type {
+  BarData, BoxplotData, DriftData, HistogramData, HistoryData, IncidentChartData, ScatterData, SpectrumData, ViewData,
+} from "../types";
 import { ShiftChart } from "./ShiftChart";
 
 const OPACITY = [1, 0.5, 0.26, 0.12, 0.05];
@@ -34,6 +36,7 @@ function buildOption(data: ViewData): ChartOption {
     case "scatter": return scatterOption(data);
     case "bar": return barOption(data);
     case "shift": return {};
+    case "incident": return incidentOption(data as IncidentChartData);
     default: return historyOption(data as HistoryData);
   }
 }
@@ -68,6 +71,15 @@ function describe(data: ViewData | null, fallbackTitle: string): { title: string
   if (data.view === "bar") {
     const d = data as BarData;
     return { title: `${d.label.charAt(0).toUpperCase()}${d.label.slice(1)} per sensor`, detail: windowText(d.window_s) };
+  }
+  if (data.view === "incident") {
+    const d = data as IncidentChartData;
+    const name = d.series.find((s) => s.sensor === d.sensor)?.name ?? d.sensor;
+    return {
+      title: d.title,
+      detail: `${d.t_text} on ${name}`,
+      tone: d.severity === "critical" ? "bad" : d.severity === "warning" ? "warn" : undefined,
+    };
   }
   if (data.view === "shift") return { title: `${data.name}: the whole shift`, detail: "" };
   if (data.view === "spectrum") {

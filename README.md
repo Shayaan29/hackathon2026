@@ -25,15 +25,21 @@ set up sensors, and lets the jury knock the machine from their own phones.
 | Mission mode (**J**) | The lights go out: the same cockpit full screen and dark, glowing lasers, a HUD with dials, and charts that fly in by themselves after each alert. Made for the projector. |
 | Judges shake their phone | A judge shakes their phone (or taps Knock). The cockpit knocks the fixture, the real detection finds the vibration on every sensor of that fixture, and the copilot greets the judge by name. |
 | Incident report | One click or "write a report": likely causes, next steps, charts around the alert, a setup check and ticket text. Save as PDF, or scan the code to take it on a phone. |
+| Load a recording | **Load file** in the top bar takes a CSV export from the measuring software. The whole file is checked with the same rules as the live sensors, with no code. The sheet says how it read the file and asks only for what it could not know. |
+| Anomaly chain | Pick an incident in the list. The chart highlights it, the twin marks where on the part it was measured, Epsilon explains why it was flagged, the checks to carry out are listed, and the report and CSV are one click away. |
 | Setup assistant | Reads a sensor's signal and proposes better settings (averaging, measuring rate) with the physics behind it, previews the result on the real last two seconds of data, applies it after a yes and then measures the improvement. |
 
 Everything runs on dummy data out of the box. To go live you replace data,
 not code: sensor names and tolerances in one YAML file, the API key in `.env`,
-and either a CSV recording or the MEDAQLib template for live sensors.
+and a CSV export loaded in the top bar (or the MEDAQLib template for live sensors).
 
 The eight hours of earlier incidents on the shift timeline are made up by the
 simulator so the demo has a past. With a recording or a live sensor nothing is
 made up: the timeline starts when the cockpit starts.
+
+**For the team:** [docs/TEAM_WALKTHROUGH.md](docs/TEAM_WALKTHROUGH.md) takes
+every member through the anomaly chain step by step, then through the rest of
+the cockpit, and lists what to check with the real files on Friday.
 
 ---
 
@@ -89,9 +95,22 @@ frontend appear instantly; restart the backend after Python changes.
 | Alert thresholds | `sensors.yaml` → `detection` | Tune at the event with real table taps |
 | AI voice key and model | `backend/.env` | `gpt-realtime-mini` while building, the full model for the demo |
 | Cockpit password | `backend/.env` → `COCKPIT_TOKEN` | Protects voice keys, demo controls and setting changes |
-| Real data | `sensors.yaml` → `source` | See the two options below |
+| Real data | **Load file** in the top bar, or `sensors.yaml` → `source` | See the options below |
 
-### Real data, option A: replay a recording (no code)
+### Real data, the quick way: analyse a whole file (no code)
+
+1. Record a few minutes with Micro-Epsilon **sensorTOOL** and export CSV.
+2. Put the file in `backend/data/`. The cockpit reads its own copy, so the original stays unchanged.
+3. Click **Load file** in the top bar, choose the file, and read "2. Check how the file was read".
+4. Type the part speed in rpm (0 if unknown), and the sample rate if the file has no time column.
+5. Type the tolerance limits in µm for each sensor, and untick the columns that are not sensors.
+6. Click **Analyse the recording**, then **Show the incidents**.
+
+The same steps run from the command line, with one PASS or FAIL per step:
+`backend/.venv/bin/python scripts/chain_check.py data/my_file.csv --rpm 8.6`
+(add `--rate 1000` for a file without a time column).
+
+### Real data, option A: replay a file as a live sensor (YAML)
 
 1. Record a few minutes with Micro-Epsilon **sensorTOOL** and export CSV.
 2. Put the file in `backend/data/`.
@@ -137,6 +156,7 @@ the safe switch if hardware misbehaves on stage.
              full-rate snapshots around every alert
    analysis ─ noise, FFT peak, drift trend, minutes to tolerance limit
    alert rules ─ vibration, noise, drift, out of range, invalid (with cooldowns)
+   incidents ─ a whole file, same rules: evidence, checks, explanation, spot on the part, report
    charts ─ histogram, box plot, scatter, bar, shift timeline,
             each with the steps that explain it
         │ WebSocket: samples, status, events          │ REST: views + AI tools
@@ -149,7 +169,14 @@ the safe switch if hardware misbehaves on stage.
 
 * **The AI never makes up numbers.** Python computes every value; the voice
   model calls tools (`get_data`, `analyze`, `make_chart`, `explain_chart`,
-  `show_shift`, `suggest_settings`, `create_report`) and only phrases the answer.
+  `show_shift`, `suggest_settings`, `create_report`, `list_incidents`,
+  `investigate_incident`) and only phrases the answer.
+* **An incident is a chain, not a picture.** Each incident keeps the window of
+  data around it, the rules that fired, the checks and their results, the
+  explanation in order, the checks to carry out (with the playbook in
+  `backend/config/playbook.yaml`), what the file does not tell, and the place on
+  the part, when the part speed is known. The chart, the twin, the copilot and
+  the report all read the same record.
 * **Explanations are computed, not guessed.** Every chart comes with its
   explanation steps, each tied to a place on the chart (a line, a band, a
   point, a time range). The copilot says the steps, and the cockpit reveals
@@ -186,8 +213,16 @@ backend/
     assistant.py     setup assistant: settings proposal and preview on real data
     report.py        incident reports as JSON and as a printable page
     realtime.py      voice: instructions, tool schemas, client secrets
-    sources/         simulator, CSV replay, MEDAQLib template
+    ingest.py        reads a file: delimiter, decimals, time column, units, counter columns
+    recording_service.py, recording_api.py   loading, analysing and the incident routes
+    incidents.py     finds the incidents of a whole recording, with evidence and snapshot
+    investigate.py   checks, explanation, checks to carry out and location of one incident
+    incident_report.py, incident_tools.py    the incident report page and the copilot's incident tools
+    sources/         simulator, CSV replay, recording playback, MEDAQLib template
   config/sensors.yaml   <- your sensors and thresholds
+  config/playbook.yaml  <- the checks to carry out, by kind of alert
+  scripts/chain_check.py       the anomaly chain, one PASS or FAIL per step
+  scripts/make_demo_recording.py   simulated exports in messy formats, for tests
   .env                  <- your keys and switches
   tests/             pytest suite
 frontend/
@@ -196,9 +231,12 @@ frontend/
   src/lib/commands.ts offline commands (English and German)
   src/lib/charts.ts  ECharts views (light and mission themes) and the explanation markers
   src/lib/twin.ts    the 3D digital twin (three.js), including the painted part
+  src/lib/incidents.ts the chart and the spot on the part for one incident
   src/components/    twin, readouts, chart stage, shift timeline, copilot, mission HUD, report, setup check
+  src/components/RecordingSheet.tsx   Load file: read, check, limits, analyse
+  src/components/IncidentDock.tsx     the incident list and the incident panel
   src/phone/         the judges' phone page: alerts, flashlight, shake detection
-docs/                contract, demo script, screenshots
+docs/                contract, demo script, team walkthrough, screenshots
 ```
 
 ---
@@ -211,6 +249,11 @@ docs/                contract, demo script, screenshots
 | Type a command | Copilot box: "show me the last five minutes", "is the sensor broken?", "compare the sensors", "show the drift", "status", "write a report", "check the setup of sensor 1", "go back" |
 | Ask for a chart | "how are the readings spread?", "which hour was calmest?", "show the spread per sensor", "do the sensors move together?", "compare the noise" |
 | Explain a chart | "explain this chart" or "walk me through it" |
+| Load a recording | **Load file** in the top bar: choose the file, read it, set the part speed and limits, analyse |
+| Incidents | **I**, the Incidents button, or type "incidents" |
+| One incident | Click it in the list, or type "incident 2" |
+| Explain an incident | **Explain** in the incident panel, or type "explain incident 2" |
+| Back to the simulator | **Load file**, then **Back to the simulator** |
 | Whole shift | "show me the whole shift" or "what happened today?". Scroll or pinch to zoom, drag to pan, click an alert line to fly to it |
 | Mission mode | **J**, the Mission mode button, or say "mission mode" |
 | Latest incident report | **R**, "Write report" on an alert, or say "write a report" |
@@ -275,9 +318,12 @@ cockpit loads the model from the internet when you switch gestures on.
 ## Tests
 
 ```powershell
-# 46 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline (on macOS/Linux: .venv/bin/python -m pytest)
+# 84 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline, file reading, incidents, copilot tools (on macOS/Linux: .venv/bin/python -m pytest)
 cd backend
 .\.venv\Scripts\python.exe -m pytest
+
+# the anomaly chain on a running cockpit: one PASS or FAIL per step
+.\.venv\Scripts\python.exe scripts\chain_check.py
 
 # in frontend
 npm run typecheck
@@ -294,5 +340,8 @@ npm run typecheck
 | Voice connects but never answers | Check the model name in `.env`; look at the browser console for the error |
 | No microphone prompt | Use `http://localhost:…` or HTTPS, not the laptop's IP address |
 | Top bar says "fallback" | The live source failed; the reason is in the sensor tile tooltip and the backend log |
+| The sheet asks for a sample rate | The file has no time column. Type its rate in Hz |
+| The twin shows no spot on the part | Type the part speed in the Load a recording sheet. 0 means unknown |
+| "No incident was found" after analysing | Check the limits and the part speed in the sheet, then analyse again |
 | Too many or too few alerts | Tune `detection` in `sensors.yaml` (ratios and cooldowns) |
 | Port 8000 busy | Change `PORT` in `.env` |

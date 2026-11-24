@@ -5,8 +5,14 @@ import type {
   BoxplotData,
   ChartSpec,
   HistogramData,
+  IncidentDetail,
+  IncidentRow,
+  IncidentsResponse,
+  InspectResult,
   InsightStep,
+  MappingDraft,
   RangeData,
+  RecordingJob,
   ScatterData,
   ShiftData,
   CockpitConfig,
@@ -16,6 +22,7 @@ import type {
   SpectrumData,
   ViewData,
 } from "../types";
+import { incidentChart } from "./incidents";
 
 const TOKEN_KEY = "cockpit-token";
 
@@ -113,6 +120,29 @@ export const api = {
     post<{ ok: boolean; id?: string; title?: string; error?: string }>("/api/tools/create_report", { event_id: eventId }),
   demo: (kind: string, body: Record<string, unknown> = {}) =>
     post<Record<string, unknown>>(`/api/demo/${kind}`, body),
+
+  // recordings: upload the file, check the mapping, analyse, play, or go back to the simulator
+  uploadRecording: async (file: File) =>
+    request<InspectResult>("/api/recording/inspect", {
+      method: "POST",
+      body: await file.arrayBuffer(),
+      headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
+    }),
+  analyseRecording: (mapping: MappingDraft) => post<RecordingJob>("/api/recording/analyse", { mapping, rate_hz: null }),
+  recordingStatus: () => request<RecordingJob>("/api/recording/status"),
+  restoreRecording: () => post<RecordingJob>("/api/recording/restore"),
+
+  // incidents of the loaded recording
+  incidents: () => request<IncidentsResponse>("/api/incidents"),
+  incident: (id: string) => request<IncidentDetail>(`/api/incidents/${encodeURIComponent(id)}`),
+  acknowledgeIncident: (id: string) => post<IncidentRow>(`/api/incidents/${encodeURIComponent(id)}/acknowledge`),
+  incidentCsvUrl: (id: string) => `/api/incidents/${encodeURIComponent(id)}/csv`,
+  incidentReportUrl: (id: string) => `/report/incident/${encodeURIComponent(id)}`,
+
+  // the copilot's tools, called from the browser when the AI asks for them
+  listIncidentsTool: () => post<Record<string, unknown>>("/api/tools/list_incidents"),
+  investigateIncident: (incidentId?: string) =>
+    post<Record<string, unknown>>("/api/tools/investigate_incident", { incident_id: incidentId ?? null }),
 };
 
 /** Fetches whatever a chart spec needs. */
@@ -132,6 +162,8 @@ export function loadView(spec: ChartSpec): Promise<ViewData> {
       return api.explore({ ...spec, sensors });
     case "shift":
       return api.shift(sensors[0]);
+    case "incident":
+      return api.incident(spec.event_id ?? "").then(incidentChart);
     default:
       return api.history([sensors[0]], spec.window_s ?? 300);
   }

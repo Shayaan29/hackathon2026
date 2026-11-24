@@ -47,3 +47,13 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   warning: "Warning",
   critical: "Critical",
 };
+
+/** Seconds from the start of a recording as m:ss.s, or h:mm:ss.s past an hour. */
+export function recordingClock(seconds: number): string {
+  const tenths = Math.max(0, Math.round(seconds * 10));
+  const h = Math.floor(tenths / 36000);
+  const m = Math.floor((tenths % 36000) / 600);
+  const s = (tenths % 600) / 10;
+  const head = h ? `${h}:${String(m).padStart(2, "0")}` : String(m).padStart(2, "0");
+  return `${head}:${s.toFixed(1).padStart(4, "0")}`;
+}

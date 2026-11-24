@@ -5,8 +5,11 @@ import type {
   ChartSpec,
   CockpitConfig,
   CockpitEvent,
+  IncidentDetail,
+  IncidentRow,
   InsightStep,
   StatusMessage,
+  TwinSpot,
   VoiceActivity,
   VoiceMode,
 } from "../types";
@@ -90,6 +93,14 @@ interface CockpitStore {
   assistantFor: string | null;
   hints: Record<string, "ok" | "improve">;
   lastShake: ShakeInfo | null;
+  /** the recording sheet and the incident list */
+  recordingOpen: boolean;
+  incidentsOpen: boolean;
+  incidents: IncidentRow[];
+  incidentId: string | null;
+  incident: IncidentDetail | null;
+  /** where the twin shows the selected incident */
+  spot: TwinSpot | null;
 
   patch: (partial: Partial<CockpitStore>) => void;
   addEvent: (event: CockpitEvent) => void;
@@ -142,6 +153,12 @@ export const useStore = create<CockpitStore>((set, get) => ({
   assistantFor: null,
   hints: {},
   lastShake: null,
+  recordingOpen: false,
+  incidentsOpen: false,
+  incidents: [],
+  incidentId: null,
+  incident: null,
+  spot: null,
 
   patch: (partial) => set(partial),
 

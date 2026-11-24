@@ -3,7 +3,7 @@
 export type Severity = "info" | "warning" | "critical";
 export type EventKind = "vibration" | "noise" | "drift" | "out_of_range" | "invalid";
 export type SensorState = "ok" | "warning" | "critical";
-export type ChartView = "timeseries" | "compare" | "spectrum" | "drift" | ExploreChart | "shift";
+export type ChartView = "timeseries" | "compare" | "spectrum" | "drift" | ExploreChart | "shift" | "incident";
 export type ExploreChart = "histogram" | "boxplot" | "scatter" | "bar";
 
 export interface Tolerance {
@@ -76,6 +76,7 @@ export interface StatusMessage {
   uptime_s: number;
   clients: { cockpit: number; phone: number };
   sensors: Record<string, SensorStatus>;
+  recording?: RecordingPublic;
 }
 
 export interface SamplesMessage {
@@ -110,6 +111,7 @@ export type ServerMessage =
   | CockpitEvent
   | SettingChangedMessage
   | ShakeMessage
+  | RecordingMessage
   | { type: "report"; id: string; title: string }
   | { type: "pong"; t: number };
 
@@ -307,7 +309,9 @@ export interface DriftData {
   } | null;
 }
 
-export type ViewData = HistoryData | SpectrumData | DriftData | HistogramData | BoxplotData | ScatterData | BarData | ShiftData;
+export type ViewData =
+  | HistoryData | SpectrumData | DriftData | HistogramData | BoxplotData | ScatterData | BarData | ShiftData
+  | IncidentChartData;
 
 export interface RealtimeSession {
   client_secret: string;
@@ -320,3 +324,211 @@ export interface RealtimeSession {
 
 export type VoiceMode = "off" | "connecting" | "ready" | "error";
 export type VoiceActivity = "idle" | "listening" | "thinking" | "speaking";
+
+// -- recordings and incidents (backend recording_api.py, incidents.py) --------
+
+export type IncidentStatus = "open" | "acknowledged";
+export type CheckStatus = "found" | "not_found" | "info" | "unknown";
+export type LengthUnit = "µm" | "mm" | "m" | "nm";
+
+/** Where the file came from and how it was read. */
+export interface RecordingInfo {
+  file: string;
+  digest: string;
+  rows: number;
+  duration_s: number;
+  source_rate_hz: number | null;
+  rate_hz: number;
+  part_rpm: number | null;
+  metadata: string[];
+  analysed_at: string;
+}
+
+/** The recording as the engine reports it: in every status message and in recording messages. */
+export interface RecordingPublic {
+  active: boolean;
+  name?: string;
+  rate_hz?: number;
+  duration_s?: number;
+  rows?: number;
+  /** server time at which sample 0 of the file started to play */
+  started_at?: number;
+  hidden_columns?: number;
+  incidents: number;
+  source?: RecordingInfo;
+  slots?: { type: string; fallback: boolean; error: string | null; file: string; column: number | null;
+            label: string | null; note?: string }[];
+}
+
+export type RecordingMessage = { type: "recording" } & Partial<RecordingPublic>;
+
+export interface AnalysisStats {
+  incidents: number;
+  shown: number;
+  alerts: number;
+  seconds_analysed: number;
+  evaluations: number;
+  elapsed_s: number;
+  by_kind: Partial<Record<EventKind, number>>;
+}
+
+/** The analysis job and the file's state, from GET /api/recording/status. */
+export interface RecordingJob {
+  state: "idle" | "running" | "done" | "error";
+  progress: number;
+  message: string;
+  error: string | null;
+  result: { stats: AnalysisStats; warnings: string[]; source: RecordingInfo } | null;
+  pending: { name: string; digest: string } | null;
+  recording: RecordingPublic;
+  playbook_error: string | null;
+  playbook_checks: number;
+}
+
+/** One column of the file, as the upload dialog edits it. */
+export interface SensorColumnDraft {
+  index: number;
+  name: string;
+  unit: LengthUnit;
+  include: boolean;
+  scale: number | null;
+  zero: "start" | "none";
+  fixture: string;
+  tolerance_low: number;
+  tolerance_high: number;
+  tolerance_source: "placeholder" | "entered";
+}
+
+export interface MappingDraft {
+  delimiter: ";" | "," | "\t";
+  decimal: "." | ",";
+  data_line: number;
+  time_index: number | null;
+  time_unit: "s" | "ms" | "min" | "h";
+  rate_hz: number | null;
+  part_rpm: number;
+  sensors: SensorColumnDraft[];
+}
+
+/** What the upload returns: the detected layout, a suggested mapping and the first rows. */
+export interface InspectResult {
+  file: { name: string; digest: string; bytes: number };
+  layout: {
+    encoding: string; delimiter: string; decimal: string; data_line: number; header: string[] | null;
+    column_count: number; time_column: number | null; time_unit: string; time_unit_guessed: boolean;
+    rate_hz: number | null; counter_columns: number[]; data_rows: number; duration_s: number | null;
+  };
+  mapping: MappingDraft;
+  preview: string[][];
+  warnings: string[];
+}
+
+export interface IncidentRow {
+  id: string;
+  title: string;
+  kind: EventKind;
+  kinds: EventKind[];
+  severity: Severity;
+  status: IncidentStatus;
+  t: number;
+  t_text: string;
+  sensor: string;
+  sensor_name: string;
+  related: string[];
+  repeats: number;
+  summary: string;
+}
+
+export interface IncidentCheck {
+  key: string;
+  label: string;
+  value: string;
+  status: CheckStatus;
+  detail: string;
+}
+
+export interface IncidentSuggestion {
+  text: string;
+  reason: string;
+  kind: string;
+}
+
+export interface IncidentLocation {
+  sensor: string;
+  sensor_name: string;
+  twin_side: "left" | "right" | null;
+  /** degrees of turn, counted from the start of the recording; null when the part speed is unknown */
+  part_angle_deg: number | null;
+  turn: number | null;
+  time_of_peak_s: number;
+  twin_angle_deg: number | null;
+}
+
+export interface IncidentSnapshot {
+  t0: number;
+  rate_hz: number;
+  sensors: { id: string; name: string; unit: string; tolerance: Tolerance; values: (number | null)[] }[];
+}
+
+export interface IncidentDetail extends IncidentRow {
+  numbers: Record<string, number | string>;
+  forecast_min: number | null;
+  highlight: { from_s: number; to_s: number };
+  window: { from_s: number; to_s: number };
+  checks: IncidentCheck[];
+  explanation: string[];
+  suggestions: IncidentSuggestion[];
+  unknown: string[];
+  location: IncidentLocation;
+  recurrence: { count: number; median_interval_s: number | null };
+  snapshot: IncidentSnapshot;
+  source: RecordingInfo;
+}
+
+export interface IncidentsResponse {
+  incidents: IncidentRow[];
+  stats: AnalysisStats | null;
+  source: RecordingInfo | null;
+  warnings: string[];
+  recording: RecordingPublic;
+}
+
+export interface IncidentSeries {
+  sensor: string;
+  name: string;
+  unit: string;
+  tolerance: Tolerance;
+  t0: number;
+  dt: number;
+  values: (number | null)[];
+}
+
+/** An incident as the stage draws it: one trace per sensor on the recording's own time axis. */
+export interface IncidentChartData {
+  view: "incident";
+  id: string;
+  title: string;
+  kind: EventKind;
+  severity: Severity;
+  sensor: string;
+  t: number;
+  t_text: string;
+  highlight: { from_s: number; to_s: number };
+  series: IncidentSeries[];
+  insights: InsightStep[];
+}
+
+/** Where the twin's spot sits for the selected incident. */
+export interface TwinSpot {
+  incidentId: string;
+  sensor: string;
+  /** seconds from the start of the recording */
+  t: number;
+  severity: Severity;
+  /** server time at which sample 0 started to play */
+  origin: number;
+  /** length of the recording in seconds: the playback loops */
+  duration: number;
+  /** the part speed the recording was analysed with; null: the spot is shown on the sensor only */
+  partRpm: number | null;
+}

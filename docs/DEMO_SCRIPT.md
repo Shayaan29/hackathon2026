@@ -3,11 +3,13 @@
 One person talks, one person drives the laptop. Rehearse it twice with the
 real projector and phones. Before you start: cockpit running, cloudflared
 running, the tunnel address saved under **Q**, demo panel closed, sound up,
-and **0** pressed in the demo panel so everything is back to normal.
+and **0** pressed in the demo panel so everything is back to normal. The day
+before, run `backend/.venv/bin/python scripts/chain_check.py`: it must end with
+"All steps passed." That proves section 6 will work on this laptop.
 
 The challenge is a user interface for sensor data, so the story is: the
 cockpit shows the right picture at the right moment, and explains it.
-Sections 7 and 9 are optional; drop them if you are short on time.
+Sections 8 and 10 are optional; drop them if you are short on time.
 
 ## 1. The problem (30 s, clean mode)
 
@@ -64,7 +66,31 @@ tells you when. The twin shows you where: the red patch comes round on every
 turn, so this is the part, not the sensor." Press **D**, **0** to take the dent
 away.
 
-## 6. The whole shift (50 s)
+## 6. The anomaly chain (90 s)
+
+Before this section, load the demo recording: **Load file**, choose
+`backend/data/demo_recording.csv`, type `8.6` as the part speed, click
+**Analyse the recording**, then **Show the incidents**. It takes about 15
+seconds, so say the next line while it runs.
+
+"One abnormal measurement, followed through the whole cockpit."
+
+1. Click **INC-002**, the drift on sensor 2. "The measurement graph highlights
+   the anomaly: the shaded part is the window where the drift was seen, and the
+   marker is where the alert fires."
+2. Point at the twin, at the label "INC-002 measured here". "The 3D component
+   shows where on the part this measurement was taken."
+3. Click **Explain**. "Epsilon explains why the anomaly was flagged, one step at
+   a time: the drift rate, the straight-line fit, the time to the limit. Each
+   marker appears as it is spoken."
+4. Point at **Checks to carry out**. "The system recommends checks, and it calls
+   them checks to carry out, not a diagnosis."
+5. Click **Open report**. "A complete incident report, from the same numbers.
+   Every number on the screen was computed from the file."
+
+Then **Load file**, **Back to the simulator**, and carry on.
+
+## 7. The whole shift (50 s)
 
 Hold Space: "What happened today?" Eight hours on one timeline, every alert
 marked. "Walk me through it." The copilot flies to each incident in turn: an
@@ -76,7 +102,7 @@ minutes.
 on the way: the band around the line always keeps the highest and lowest
 reading."
 
-## 7. Prediction (40 s, optional)
+## 8. Prediction (40 s, optional)
 
 Press **D**, **2** (drift on sensor 2), close with **D**. After about ten
 seconds the copilot warns: drift of about 6 µm per minute, tolerance limit in
@@ -84,13 +110,13 @@ about 7 minutes. The forecast chart shows the dashed line hitting the limit.
 "The copilot sees the problem before it produces a single bad part." Press
 **D**, **3** to stop the drift.
 
-## 8. The report (30 s)
+## 9. The report (30 s)
 
 Hold Space: "Write a report." The incident report opens with likely causes,
 next steps and the signal around the alert. "Scan the code on the right and
 the report is on your phone, as a PDF if you like."
 
-## 9. It fixes things too (50 s, optional)
+## 10. It fixes things too (50 s, optional)
 
 Press **D**, **6**, then **J** to leave mission mode. "Someone left sensor 1 on
 the wrong settings." Hold Space: "Is sensor 1 set up well?"
@@ -100,7 +126,7 @@ proposal (averaging 64, measuring rate 4000 Hz so 30 Hz stays visible) and the
 preview on the real last two seconds of signal. Say "yes" or click Apply. The
 noise drops about five times, measured live.
 
-## 10. Close (15 s)
+## 11. Close (15 s)
 
 "Everything you saw runs on Micro-Epsilon data: replace one YAML file with the
 real sensors, or plug in MEDAQLib, and the cockpit watches the real line. The
@@ -115,5 +141,7 @@ the same on day one."
 | Phones cannot join | Use the hotspot of a phone for the laptop, restart cloudflared, show the new code. |
 | Nobody wants to shake | Press **D**, **1** for the same knock. |
 | A chart hides the part | Say "dismiss" or press **Delete**. |
+| The recording does not load on stage | Press **Escape**, skip section 6, and go on with section 7. Sections 7 onward use the simulator. |
+| The incident spot is missing on the part | The part speed was not typed. Type `8.6` in the sheet, then analyse again. |
 | The scatter has no bright streak | The knock is older than a minute: knock again, then ask. |
 | The 3D view is blank | Gestures and charts still work; the browser needs WebGL (use Chrome or Edge). |

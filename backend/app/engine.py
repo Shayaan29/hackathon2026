@@ -21,19 +21,18 @@ from .analysis import decimate_minmax, robust_sigma, round_or_none, to_json_list
 from .buffer import SensorBuffer
 from .config import Settings
 from .detection import Detector, Event
+from .geometry import track_angle
 from .hub import COCKPIT, PHONE, Hub
+from .incidents import IncidentStore
+from .ingest import Recording
 from .sources import SensorSource, SimulatedSensor, SourceError, create_source
+from .sources.recording import RecordingSource
 from .sources.simulator import make_history
 
 SNAPSHOT_BEFORE_S = 3.0  # full-rate data kept around every alert, for zooming in later
 SNAPSHOT_AFTER_S = 3.5
 SNAPSHOTS_PER_SENSOR = 80
 
-
-def track_angle(index: int, count: int) -> float:
-    """Where sensor ``index`` meets the turning part. The 3D twin uses the same rule:
-    the first half of the sensors sit left of the axis, the rest right of it."""
-    return math.pi if count > 1 and index < count / 2 else 0.0
 
 log = logging.getLogger("cockpit.engine")
 
@@ -76,6 +75,10 @@ class Engine:
         self.history_events: list[Event] = []
         self.snapshots: dict[str, list[tuple[float, float, np.ndarray]]] = {s.id: [] for s in settings.sensors}
         self._snapshot_due: list[tuple[float, Event]] = []
+        # a recording played in place of the simulator; live alerts are off while it plays
+        self.recording: dict[str, Any] | None = None
+        self.live_detection = True
+        self.incidents = IncidentStore()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -128,6 +131,84 @@ class Engine:
         log.info("shift history: %d earlier incidents over %.1f h", len(self.history_events),
                  (end - start) / 3600)
 
+    def _stop_sources(self) -> None:
+        for source in self.sources.values():
+            try:
+                source.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("error while stopping a source")
+
+    def _reset_live_state(self) -> None:
+        """Empty every live buffer, alert state and history so no earlier data mixes in."""
+        eng = self.settings.engine
+        self.buffers = {s.id: SensorBuffer(self.rate_hz, eng.fast_buffer_s, eng.slow_buffer_s)
+                        for s in self.settings.sensors}
+        self.detector = Detector(self.settings.sensors, self.settings.detection, self.rate_hz)
+        self.events.clear()
+        self.history_events = []
+        self.snapshots = {s.id: [] for s in self.settings.sensors}
+        self._snapshot_due = []
+        self._pending = {s.id: np.empty(0) for s in self.settings.sensors}
+        self._pending_t_end = {}
+        self.sources = {}
+        self.source_info = {}
+
+    def adopt_recording(self, rec: Recording, source: dict[str, Any]) -> dict[str, Any]:
+        """Play a recording in the cockpit's sensor slots instead of the simulator.
+
+        Recording sensors fill the configured slots in order. A slot without a
+        recording column stays silent (NaN), it is never filled with invented data.
+        Live alerts are switched off while a recording plays, so every incident
+        comes from the whole-file analysis and none is counted twice.
+        The caller stores this recording's incidents before calling, and they are
+        kept here: the broadcast below reports their count."""
+        self._stop_sources()
+        self._reset_live_state()
+        now = time.time()
+        slots: list[dict[str, Any]] = []
+        for index, cfg in enumerate(self.settings.sensors):
+            if index < len(rec.sensors):
+                column = rec.sensors[index]
+                values = rec.values[column["id"]]
+                info = {"type": "recording", "fallback": False, "error": None, "file": rec.name,
+                        "column": column["file_column"], "label": column["name"]}
+            else:
+                values = np.full(self.rate_hz, np.nan)
+                info = {"type": "recording", "fallback": False, "error": None, "file": rec.name,
+                        "column": None, "label": None, "note": "no recording column for this sensor"}
+            playback = RecordingSource(cfg, self.rate_hz, values, label=info["label"] or "")
+            playback.start()
+            history = playback.backfill(self.settings.engine.backfill_s, now)
+            self.sources[cfg.id] = playback
+            self.source_info[cfg.id] = info
+            if history is not None:
+                self.buffers[cfg.id].append(history[0], history[1])
+            slots.append(info)
+        self.live_detection = False
+        # sample 0 of the file is played at started_at; the twin uses it to put its spot on the part
+        self.recording = {"name": rec.name, "rate_hz": rec.rate_hz, "duration_s": rec.duration_s,
+                          "rows": rec.rows, "source": source, "slots": slots, "started_at": now,
+                          "hidden_columns": max(0, len(rec.sensors) - len(self.settings.sensors))}
+        log.info("recording %s is playing in %d sensor slots (%.1f s)", rec.name,
+                 min(len(rec.sensors), len(self.settings.sensors)), rec.duration_s)
+        self.hub.broadcast({"type": "recording", **self.recording_public()})
+        return self.recording_public()
+
+    def restore_simulator(self) -> None:
+        """Back to the configured sensors (simulator or real sources), with live alerts on."""
+        self._stop_sources()
+        self._reset_live_state()
+        self.recording = None
+        self.live_detection = True
+        self.incidents.clear()
+        self.start_sources()
+        self.hub.broadcast({"type": "recording", "active": False})
+
+    def recording_public(self) -> dict[str, Any]:
+        if self.recording is None:
+            return {"active": False, "incidents": 0}
+        return {"active": True, **self.recording, "incidents": len(self.incidents.items)}
+
     async def start(self) -> None:
         self.start_sources()
         self._task = asyncio.create_task(self._run(), name="acquisition")
@@ -155,8 +236,9 @@ class Engine:
                 self.flush_display()
                 last_display = now
             if now - last_eval >= self.settings.detection.eval_interval_s:
-                for event in self.detector.evaluate(self.buffers, now):
-                    self.publish_event(event)
+                if self.live_detection:
+                    for event in self.detector.evaluate(self.buffers, now):
+                        self.publish_event(event)
                 last_eval = now
             if now - last_status >= self.status_interval_s:
                 self.hub.broadcast(self.status_message())
@@ -260,7 +342,7 @@ class Engine:
                 "settings": dict(self.values[cfg.id]),
             }
         return {"type": "status", "t": time.time(), "uptime_s": round(time.time() - self.started_at),
-                "clients": self.hub.counts(), "sensors": sensors}
+                "clients": self.hub.counts(), "sensors": sensors, "recording": self.recording_public()}
 
     def recent_events(self, limit: int = 50, since: float | None = None,
                       sensor: str | None = None) -> list[dict[str, Any]]:

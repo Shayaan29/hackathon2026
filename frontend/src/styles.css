@@ -446,6 +446,128 @@ button { cursor: pointer; }
   .hud-corner { stroke-dashoffset: 0; }
 }
 
+/* -- recordings and incidents ----------------------------------------------- */
+
+/* the twin: where the selected incident sits on the part */
+.twin-spot {
+  position: absolute; left: 0; top: 0; z-index: 2; margin: -34px 0 0 14px; padding: 4px 9px; border-radius: 8px;
+  background: rgba(248, 249, 250, 0.92); border: 1px solid var(--hair); font-size: 13px; white-space: nowrap;
+  pointer-events: none; transition: opacity 0.3s;
+}
+.twin-spot strong { font-weight: 600; color: var(--laser-deep); margin-right: 2px; }
+.twin-spot[data-severity="warning"] strong { color: var(--amber-text); }
+.twin-spot[data-severity="critical"] strong { color: var(--nogo); }
+.twin-spot-note { position: absolute; left: 16px; bottom: 30px; font-size: 13px; color: var(--amber-text); pointer-events: none; }
+.callout.is-spot .callout-body { border-color: var(--laser); }
+
+/* the recording sheet */
+.sheet-rec { width: min(980px, 96vw); }
+.rec-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 22px 24px; display: grid; gap: 24px; align-content: start; }
+.rec-step { display: grid; gap: 10px; }
+.rec-step h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.rec-step > p { margin: 0; max-width: 72ch; font-size: 14px; line-height: 1.5; }
+.rec-loaded {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--r-ctl);
+  background: var(--laser-soft); border: 1px solid rgba(90, 63, 242, 0.25);
+}
+.rec-loaded > span { margin-right: auto; font-size: 14px; }
+.rec-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
+.rec-field { display: grid; gap: 4px; font-size: 13px; color: var(--steel); }
+.rec-field input { width: 150px; }
+.rec-file { cursor: pointer; }
+.rec-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 6px 22px; margin: 0; font-size: 14px; }
+.rec-facts div { display: flex; gap: 8px; min-width: 0; }
+.rec-facts dt { color: var(--steel); flex: none; }
+.rec-facts dd { margin: 0; font-weight: 500; font-variant-numeric: tabular-nums; }
+.rec-preview { overflow-x: auto; border: 1px solid var(--hair); border-radius: 10px; background: #fff; }
+.rec-preview table { border-collapse: collapse; width: 100%; font: 500 13px var(--cond); font-variant-numeric: tabular-nums; }
+.rec-preview td { padding: 4px 10px; border-top: 1px solid var(--hair); white-space: nowrap; }
+.rec-preview tr:first-child td { font-weight: 600; color: var(--steel); border-top: 0; }
+.rec-warn { margin: 0; padding-left: 20px; color: var(--amber-text); font-size: 14px; line-height: 1.5; }
+.rec-table-wrap { overflow-x: auto; }
+.rec-table { width: 100%; border-collapse: separate; border-spacing: 0 6px; font-size: 14px; }
+.rec-table th { text-align: left; font-weight: 500; font-size: 13px; color: var(--steel); padding: 0 8px 0 8px; white-space: nowrap; }
+.rec-table td { padding: 0 8px; vertical-align: middle; white-space: nowrap; }
+.rec-table tr.is-off td { opacity: 0.45; }
+.rec-table input[type="text"], .rec-table select {
+  height: 34px; padding: 0 9px; border-radius: 9px; border: 1px solid var(--hair-strong); background: #fff; font-size: 14px; color: var(--ink); min-width: 0;
+}
+.rec-table input[type="text"] { width: 110px; }
+.rec-table input[type="checkbox"] { accent-color: var(--laser); width: 16px; height: 16px; }
+.rec-progress { height: 8px; border-radius: 999px; background: var(--sunk); overflow: hidden; }
+.rec-progress span { display: block; height: 100%; background: var(--laser); transition: width 0.25s ease; }
+.rec-result {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; padding: 14px 16px; border-radius: 12px;
+  border: 1px solid var(--hair); background: #fff;
+}
+.rec-result strong { font: 600 44px/1 var(--cond); font-variant-numeric: tabular-nums; }
+.rec-result span { font-size: 15px; }
+.rec-result small { color: var(--steel); font-size: 14px; }
+.rec-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.rec-error { margin: 0; color: var(--nogo); font-size: 14px; }
+
+/* the incident panel, beside the copilot */
+.incident-dock {
+  position: fixed; top: 78px; right: 14px; bottom: 14px; z-index: 60; width: min(440px, 46vw);
+  display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--hair);
+  border-radius: var(--r-panel); box-shadow: 0 30px 70px -30px rgba(21, 32, 43, 0.55);
+  animation: sheet-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.dock-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 16px 12px; border-bottom: 1px solid var(--hair); }
+.dock-head h2 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.2; }
+.dock-head p { margin: 2px 0 0; font-size: 13px; }
+.dock-body { flex: 1; min-height: 0; overflow-y: auto; }
+.dock-empty { margin: 0; padding: 18px 16px; display: grid; gap: 12px; justify-items: start; font-size: 14px; line-height: 1.5; }
+.inc-list { list-style: none; margin: 0; padding: 8px; display: grid; gap: 2px; }
+.inc-row {
+  width: 100%; display: grid; grid-template-columns: 10px auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 10px; border: 1px solid transparent; background: transparent; text-align: left;
+}
+.inc-row:hover { background: var(--sunk); }
+.inc-row.is-selected { border-color: var(--laser); background: var(--laser-soft); }
+.inc-sev { width: 10px; height: 10px; border-radius: 3px; background: var(--laser); }
+.inc-sev.sev-warning { background: var(--amber); }
+.inc-sev.sev-critical { background: var(--nogo); }
+.inc-id { font: 600 14px var(--cond); color: var(--steel); }
+.inc-title { font-weight: 500; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inc-row time { font: 500 13px var(--cond); color: var(--steel); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.inc-detail { display: grid; gap: 16px; padding: 14px 16px 22px; border-top: 1px solid var(--hair); }
+.inc-head { display: grid; gap: 4px; }
+.inc-head h3 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.25; }
+.inc-head p { margin: 0; font-size: 13px; }
+.inc-badge { justify-self: start; padding: 2px 9px; border-radius: 999px; font-size: 13px; font-weight: 600; background: var(--laser-soft); color: var(--laser-deep); }
+.inc-badge.sev-warning { background: rgba(224, 138, 0, 0.14); color: var(--amber-text); }
+.inc-badge.sev-critical { background: rgba(215, 38, 61, 0.12); color: var(--nogo); }
+.inc-summary { margin: 0; font-size: 15px; line-height: 1.5; }
+.inc-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.inc-actions .solid-btn { height: 38px; padding: 0 14px; font-size: 14px; }
+.inc-actions .quiet-btn { height: 34px; padding: 0 11px; font-size: 13px; }
+.inc-block h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--steel); }
+.inc-block p { margin: 0; font-size: 14px; line-height: 1.5; }
+.inc-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.inc-checks li { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 10px; font-size: 14px; line-height: 1.4; }
+.inc-check-status { font-size: 12px; font-weight: 600; color: var(--steel); padding-top: 2px; }
+.inc-checks li[data-status="found"] .inc-check-status { color: var(--amber-text); }
+.inc-checks li[data-status="not_found"] .inc-check-status { color: var(--go); }
+.inc-checks small { display: block; color: var(--steel); font-size: 13px; }
+.inc-explain { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; line-height: 1.5; }
+.inc-suggest { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 14px; line-height: 1.45; }
+.inc-suggest li { display: grid; gap: 2px; padding-left: 12px; border-left: 2px solid var(--laser); }
+.inc-suggest span { font-size: 13px; }
+.inc-unknown { padding: 10px 12px; border-radius: 10px; background: rgba(224, 138, 0, 0.08); }
+.inc-unknown ul { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.5; }
+.inc-foot { font-size: 12.5px; line-height: 1.45; }
+
+/* mission mode: the machine alone; the lists and sheets stay with the operator */
+.app.is-mission .incident-dock { display: none; }
+.app.is-mission .twin-spot { background: rgba(10, 11, 34, 0.6); border-color: rgba(143, 128, 255, 0.4); color: var(--holo-text); }
+.app.is-mission .twin-spot strong { color: #b9adff; }
+
+@media (max-width: 1180px) {
+  .incident-dock { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 70vh; }
+  .sheet-rec { width: 98vw; }
+}
+
 /* -- smaller screens --------------------------------------------------------- */
 
 @media (max-width: 1180px) {

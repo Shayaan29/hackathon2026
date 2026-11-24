@@ -14,9 +14,9 @@ import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import type {
   Anchor, BarData, BoxplotData, CockpitEvent, DriftData, HistogramData, HistoryData, InsightStep, RangeData,
-  ScatterData, Series, Severity, SpectrumData, Tolerance, ViewData,
+  IncidentChartData, ScatterData, Series, Severity, SpectrumData, Tolerance, ViewData,
 } from "../types";
-import { KIND_LABEL, relSeconds } from "./format";
+import { KIND_LABEL, recordingClock, relSeconds } from "./format";
 
 echarts.use([
   LineChart,
@@ -658,6 +658,142 @@ export function shiftOption(data: RangeData, points: ShiftPoint[], window?: [num
 }
 
 // ---------------------------------------------------------------------------
+// One incident: the recording's own time axis, one trace per sensor
+// ---------------------------------------------------------------------------
+
+/**
+ * The incident's sensor is drawn first and strongest. The rule window is shaded and
+ * the flagged moment marked on every sensor, so the same moment reads across all of them.
+ */
+export function incidentOption(data: IncidentChartData): ChartOption {
+  const own = data.series.find((s) => s.sensor === data.sensor) ?? data.series[0];
+  const unit = own?.unit ?? "";
+  const n = Math.max(1, data.series.length);
+  const accent = data.severity === "critical" ? COLORS.red : data.severity === "warning" ? COLORS.amber : COLORS.cyan;
+  const topPct = 5;
+  const bottomPct = 10;
+  const gapPct = 6;
+  const heightPct = (100 - topPct - bottomPct - gapPct * (n - 1)) / n;
+
+  let xMin = Infinity;
+  let xMax = -Infinity;
+  for (const s of data.series) {
+    if (!s.values.length) continue;
+    xMin = Math.min(xMin, s.t0);
+    xMax = Math.max(xMax, s.t0 + (s.values.length - 1) * s.dt);
+  }
+  if (!Number.isFinite(xMin)) {
+    xMin = 0;
+    xMax = 1;
+  }
+  if (xMax <= xMin) xMax = xMin + 1;
+
+  const grids: Record<string, unknown>[] = [];
+  const xAxes: Record<string, unknown>[] = [];
+  const yAxes: Record<string, unknown>[] = [];
+  const series: Record<string, unknown>[] = [];
+
+  data.series.forEach((s, index) => {
+    const isOwn = s.sensor === data.sensor;
+    grids.push(
+      n === 1
+        ? { left: 70, right: 30, top: 34, bottom: 44 }
+        : { left: 70, right: 30, top: `${topPct + index * (heightPct + gapPct)}%`, height: `${heightPct}%` },
+    );
+    xAxes.push({
+      type: "value",
+      gridIndex: index,
+      min: xMin,
+      max: xMax,
+      axisLine: { lineStyle: { color: COLORS.axis } },
+      axisTick: { show: false },
+      splitLine: { show: false },
+      axisLabel: { show: index === n - 1, color: COLORS.dim, fontSize: 11, formatter: (v: number) => recordingClock(v) },
+    });
+
+    const [lo, hi] = extent(s.values);
+    // the tolerance limits appear only when the readings come near them, as in the timeseries view
+    const mid = (s.tolerance.high + s.tolerance.low) / 2;
+    const nearLimit = hi >= mid + (s.tolerance.high - mid) / 2 || lo <= mid - (mid - s.tolerance.low) / 2;
+    const [yMin, yMax] = nearLimit
+      ? niceRange(Math.min(lo, s.tolerance.low), Math.max(hi, s.tolerance.high))
+      : niceRange(lo, hi);
+    yAxes.push(valueAxis({
+      gridIndex: index,
+      min: yMin,
+      max: yMax,
+      splitNumber: n > 1 ? 3 : 5,
+      name: n > 1 ? s.name : `${s.name} (${unit})`,
+      nameLocation: "middle",
+      nameGap: 48,
+      nameTextStyle: { color: isOwn ? COLORS.cyan : COLORS.dim, fontSize: 12, fontWeight: "bold" },
+    }));
+
+    const lines: Record<string, unknown>[] = [];
+    if (isOwn) {
+      lines.push({
+        xAxis: data.t,
+        lineStyle: { color: accent, type: "dashed", width: 1.4 },
+        label: { show: true, formatter: KIND_LABEL[data.kind], position: "insideEndTop", color: accent,
+          fontSize: 11, fontWeight: 600 },
+      });
+    }
+    if (nearLimit) {
+      for (const mark of toleranceMarks(s.tolerance, unit)) {
+        lines.push({ ...mark, lineStyle: { color: COLORS.red, type: "dashed", width: 1, opacity: 0.8 } });
+      }
+    }
+
+    const ruleWindow = [
+      { xAxis: data.highlight.from_s, itemStyle: { color: hexToRgba(accent, isOwn ? 0.16 : 0.07) } },
+      { xAxis: data.highlight.to_s },
+    ];
+    const at = Math.round((data.t - s.t0) / s.dt);
+    const peak = isOwn && at >= 0 && at < s.values.length ? s.values[at] : null;
+
+    series.push({
+      type: "line",
+      name: s.name,
+      xAxisIndex: index,
+      yAxisIndex: index,
+      data: s.values.map((v, i) => [s.t0 + i * s.dt, v]),
+      showSymbol: false,
+      connectNulls: false,
+      sampling: "lttb",
+      lineStyle: isOwn ? glow(COLORS.cyan, 1.6) : { color: COLORS.dim, width: 1.1 },
+      itemStyle: { color: isOwn ? COLORS.cyan : COLORS.dim },
+      emphasis: { disabled: true },
+      markArea: { silent: true, data: [ruleWindow] },
+      markLine: { silent: true, symbol: "none", label: { color: COLORS.red, fontSize: 10 }, data: lines },
+      markPoint: peak === null ? undefined : {
+        symbol: "circle",
+        symbolSize: 12,
+        silent: true,
+        itemStyle: { color: accent, borderColor: "#fff", borderWidth: 2, shadowBlur: 14, shadowColor: accent },
+        data: [{ coord: [data.t, peak] }],
+      },
+    });
+  });
+
+  return {
+    ...base(unit),
+    grid: grids,
+    xAxis: xAxes,
+    yAxis: yAxes,
+    series,
+    dataZoom: [{
+      type: "inside",
+      xAxisIndex: data.series.map((_, i) => i),
+      filterMode: "none",
+      zoomOnMouseWheel: true,
+      moveOnMouseMove: true,
+      minValueSpan: 0.2,
+    }],
+    axisPointer: n > 1 ? { link: [{ xAxisIndex: "all" }] } : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Annotations: what the copilot points at while it explains a chart
 // ---------------------------------------------------------------------------
 
@@ -678,8 +814,10 @@ function stepLabel(n: number, text: string | undefined, active: boolean): Record
 
 /** Which grid an anchor belongs to (compare charts stack one grid per sensor). */
 function gridsFor(view: ViewData, anchor: Anchor): number[] {
-  if (view.view !== "compare") return [0];
-  const ids = (view as HistoryData).series.map((s) => s.sensor);
+  if (view.view !== "compare" && view.view !== "incident") return [0];
+  const ids = view.view === "incident"
+    ? (view as IncidentChartData).series.map((s) => s.sensor)
+    : (view as HistoryData).series.map((s) => s.sensor);
   if (anchor.sensor && ids.includes(anchor.sensor)) return [ids.indexOf(anchor.sensor)];
   return ids.map((_, i) => i);
 }
@@ -702,6 +840,12 @@ function xRange(view: ViewData): [number, number] | null {
     case "histogram": {
       const edges = (view as HistogramData).series.flatMap((s) => [s.edges[0], s.edges[s.edges.length - 1]]);
       return edges.length ? [Math.min(...edges), Math.max(...edges)] : null;
+    }
+    case "incident": {
+      const ends = (view as IncidentChartData).series
+        .filter((s) => s.values.length > 0)
+        .flatMap((s) => [s.t0, s.t0 + (s.values.length - 1) * s.dt]);
+      return ends.length ? [Math.min(...ends), Math.max(...ends)] : null;
     }
     case "spectrum": {
       const f = (view as SpectrumData).freqs.filter((v): v is number => v !== null);

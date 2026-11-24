@@ -50,6 +50,8 @@ export function Header() {
   const gesturesOn = useStore((s) => s.gesturesOn);
   const phones = useStore((s) => s.status?.clients.phone ?? 0);
   const tokenOk = useStore((s) => s.tokenOk);
+  const recordingOn = useStore((s) => Boolean(s.status?.recording?.active));
+  const incidentCount = useStore((s) => (s.status?.recording?.active ? s.status.recording.incidents : 0));
   const patch = useStore((s) => s.patch);
   const time = useClock();
 
@@ -73,6 +75,14 @@ export function Header() {
             <Icon name="lock" /><span>Unlock</span>
           </button>
         )}
+        <button className={`tool ${recordingOn ? "is-on" : ""}`} onClick={() => patch({ recordingOpen: true })}
+                title="Load a recording file">
+          <Icon name="doc" /><span>{recordingOn ? "Recording" : "Load file"}</span>
+        </button>
+        <button className={`tool ${incidentCount ? "is-on" : ""}`}
+                onClick={() => patch({ incidentsOpen: !useStore.getState().incidentsOpen })} title="Incidents (I)">
+          <Icon name="bolt" /><span>{incidentCount ? `Incidents (${incidentCount})` : "Incidents"}</span>
+        </button>
         <button className="tool" onClick={() => patch({ qrOpen: true })} title="Phones (Q)">
           <Icon name="phone" /><span>{phones ? `${phones} phone${phones === 1 ? "" : "s"}` : "Phones"}</span>
         </button>

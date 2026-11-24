@@ -4,6 +4,7 @@ import { api, ApiError, getToken, initToken, setToken } from "./lib/api";
 import { parseCommand, phrase, windowWords, type Intent, type Lang } from "./lib/commands";
 import { KIND_LABEL } from "./lib/format";
 import { setChartTheme } from "./lib/charts";
+import { incidentChart, twinSpot } from "./lib/incidents";
 import { ingest, meters, setServerTime } from "./lib/live";
 import { LiveSocket } from "./lib/socket";
 import { alarm, blip, chime, confirmSound, dissolveSound, setSoundEnabled, unlockAudio, whoosh } from "./lib/sound";
@@ -11,7 +12,8 @@ import { PushToTalkRecognizer, recognitionAvailable, speak, stopSpeaking } from 
 import { RealtimeVoice } from "./lib/voice";
 import { useStore } from "./state/store";
 import type {
-  ChartSpec, ChartView, CockpitEvent, ExploreChart, InsightStep, ServerMessage, SpectrumData, DriftData, ViewData,
+  ChartSpec, ChartView, CockpitEvent, ExploreChart, IncidentDetail, IncidentRow, InsightStep, RecordingPublic,
+  ServerMessage, SpectrumData, DriftData, ViewData,
 } from "./types";
 
 type StageApi = { dissolveFront: () => boolean };
@@ -63,6 +65,7 @@ class Controller {
     window.addEventListener("pointerdown", unlockAudio, { once: true });
     window.setInterval(() => void this.refreshHints(), 8000);
     window.setTimeout(() => void this.refreshHints(), 3000);
+    void this.refreshIncidents();
   }
 
   // -- charts the copilot builds, explanations, the shift timeline -------
@@ -140,12 +143,17 @@ class Controller {
       }
     }
     if (!steps?.length) return { ok: false, error: "There is nothing to explain on this chart yet." };
+    this.startTour(front.id, steps);
+    return { ok: true, steps: steps.map((s, i) => `${i + 1}. ${s.text}`) };
+  }
+
+  /** Starts walking through a chart's explanation: the AI voice follows its speech, the browser voice speaks the steps. */
+  private startTour(panelId: string, steps: InsightStep[]): void {
     this.endTour();
     const mode = this.voice?.connected ? "ai" : "browser";
-    this.tour = { panelId: front.id, steps, mode, ended: false };
-    store().setTour(front.id, { steps, shown: 0 });
+    this.tour = { panelId, steps, mode, ended: false };
+    store().setTour(panelId, { steps, shown: 0 });
     if (mode === "browser") this.speakTourStep(0);
-    return { ok: true, steps: steps.map((s, i) => `${i + 1}. ${s.text}`) };
   }
 
   private revealStep(count: number): void {
@@ -291,6 +299,87 @@ class Controller {
     store().toast(ok ? "Cockpit unlocked" : "Wrong token", ok ? "ok" : "error");
   }
 
+  // -- recordings and incidents -----------------------------------------
+
+  /** Reloads the incident list of the loaded recording; empty when no recording is loaded. */
+  async refreshIncidents(): Promise<IncidentRow[]> {
+    try {
+      const data = await api.incidents();
+      store().patch({ incidents: data.incidents });
+      return data.incidents;
+    } catch {
+      return store().incidents;
+    }
+  }
+
+  /**
+   * Shows one incident: its chart on the stage, its measured spot on the twin and its
+   * detail in the incident panel. With `tour`, the chart's explanation is walked through.
+   */
+  async openIncident(id: string, options: { tour?: boolean } = {}): Promise<IncidentDetail | null> {
+    let detail: IncidentDetail;
+    try {
+      detail = await api.incident(id);
+    } catch (error) {
+      store().toast(error instanceof ApiError ? error.message : `Incident ${id} is not available`, "error");
+      return null;
+    }
+    const chart = incidentChart(detail);
+    store().patch({
+      incidentId: id,
+      incident: detail,
+      incidentsOpen: true,
+      spot: twinSpot(detail, store().status?.recording),
+    });
+    this.show({ view: "incident", sensors: [detail.sensor], event_id: id });
+    const panelId = store().stage.find((p) => !p.leaving)?.id;
+    if (panelId) {
+      this.rememberPanelData(panelId, chart);
+      if (options.tour) this.startTour(panelId, chart.insights);
+    }
+    return detail;
+  }
+
+  /** The copilot's investigation: the stage and the twin move to the incident, and the findings are returned to it. */
+  async investigate(incidentId?: string): Promise<Record<string, unknown>> {
+    const result = await api.investigateIncident(incidentId);
+    const found = result.incident as { id?: unknown } | undefined;
+    if (found && typeof found.id === "string") await this.openIncident(found.id, { tour: true });
+    return result;
+  }
+
+  /** The Explain button: the copilot explains when it is connected, otherwise the browser voice walks the steps. */
+  async explainIncident(id: string): Promise<void> {
+    if (this.aiVoice) {
+      await this.openIncident(id);
+      void this.submitText(`Explain incident ${id}.`);
+      return;
+    }
+    await this.openIncident(id, { tour: true });
+  }
+
+  /** Typed or offline voice commands about incidents: "incidents", "incident 2", "investigate". */
+  private async incidentCommand(lower: string): Promise<void> {
+    const rows = await this.refreshIncidents();
+    if (!rows.length) {
+      this.say("No incidents yet. Load a recording first, then analyse it.");
+      return;
+    }
+    const match = lower.match(/(?:inc-?|incident\s*#?|vorfall\s*#?)\s*(\d{1,3})\b/);
+    if (match) {
+      const number = Number(match[1]);
+      const id = `INC-${String(number).padStart(3, "0")}`;
+      if (!rows.some((row) => row.id === id)) {
+        this.say(`There is no incident ${number}. The list has ${rows.length}.`);
+        return;
+      }
+      await this.openIncident(id, { tour: true });
+      return;
+    }
+    store().patch({ incidentsOpen: true });
+    this.say(`There ${rows.length === 1 ? "is one incident" : `are ${rows.length} incidents`}. Pick one in the list, or say incident 2.`);
+  }
+
   // -- live data -------------------------------------------------------
 
   private onMessage(message: ServerMessage): void {
@@ -327,6 +416,20 @@ class Controller {
           reportId: message.id, title: message.title });
         store().patch({ reportId: message.id, assistantFor: null });
         break;
+      case "recording": {
+        // a recording was loaded or left: keep the status in step, and the incident list with it
+        const current = store().status;
+        if (current) {
+          const recording = { ...current.recording, ...message } as RecordingPublic;
+          store().patch({ status: { ...current, recording } });
+        }
+        if (message.active) {
+          void this.refreshIncidents();
+        } else {
+          store().patch({ incidents: [], incidentId: null, incident: null, spot: null, incidentsOpen: false });
+        }
+        break;
+      }
       default:
         break;
     }
@@ -568,6 +671,12 @@ class Controller {
         const eventId = typeof args.event_id === "string" && args.event_id ? args.event_id : undefined;
         return api.createReport(eventId);
       }
+      case "list_incidents":
+        return api.listIncidentsTool();
+      case "investigate_incident": {
+        const incidentId = typeof args.incident_id === "string" && args.incident_id ? args.incident_id : undefined;
+        return this.investigate(incidentId);
+      }
       case "change_setting": {
         try {
           const result = await api.changeSetting(sensor, String(args.name), String(args.value), Boolean(args.confirmed));
@@ -588,6 +697,10 @@ class Controller {
     const config = store().config;
     if (!config) return;
     const lower = text.toLowerCase();
+    if (/\b(incidents?|investigat\w*|anomal\w*|vorf[aä]ll\w*|untersuch\w*)\b/.test(lower)) {
+      await this.incidentCommand(lower);
+      return;
+    }
     if (/\b(report|bericht|ticket)\b/.test(lower)) {
       const result = await api.createReport();
       if (!result.ok) this.say(result.error ?? "There is no alert to report yet.");
@@ -842,7 +955,13 @@ class Controller {
         break;
       case "Escape":
         if (s.reportId || s.assistantFor) s.patch({ reportId: null, assistantFor: null });
+        else if (s.recordingOpen) s.patch({ recordingOpen: false });
+        else if (s.incidentsOpen) s.patch({ incidentsOpen: false });
         else s.patch({ qrOpen: false, demoOpen: false, alert: null });
+        break;
+      case "i":
+      case "I":
+        s.patch({ incidentsOpen: !s.incidentsOpen });
         break;
       case "j":
       case "J":

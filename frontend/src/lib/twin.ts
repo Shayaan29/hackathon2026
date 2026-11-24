@@ -5,6 +5,7 @@
 // draws the real triangulation geometry: the emitted beam down to the part and
 // the reflected beam back to the receiver lens. Live readings move the laser
 // spots, alerts shake the gantry, and mission mode turns the lights down.
+import type { TwinSpot } from "../types";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -66,6 +67,9 @@ const LOOK = {
 };
 // lasers are drawn brighter than white so they, and only they, glow
 const HDR = 3.2;
+
+/** The incident spot takes the colour of its severity. */
+const SPOT_COLOR: Record<TwinSpot["severity"], string> = { info: "#8f80ff", warning: "#ffa51f", critical: "#ff3150" };
 
 const TABLE_TOP = 0.5;
 const PART_TOP = 0.95;
@@ -160,9 +164,14 @@ export class Twin {
   private paintCtx!: CanvasRenderingContext2D;
   private paintTex!: THREE.CanvasTexture;
   private readonly painted = new Map<string, { t: number; x: number; y: number }>();
+  /** part angle = omega * t + phase: the phase keeps the part where it is when its speed changes */
+  private phase = 0;
+  private spot: TwinSpot | null = null;
+  private spotDot!: THREE.Sprite;
+  private spotRing!: THREE.Mesh;
 
   constructor(private readonly host: HTMLElement, sensors: TwinSensor[], private readonly source: TwinSource,
-              private readonly omega = 0.9) {
+              private omega = 0.9) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     this.renderer.toneMapping = THREE.NeutralToneMapping;
@@ -217,6 +226,7 @@ export class Twin {
     this.scene.add(grid);
 
     this.buildMachine(sensors);
+    this.buildSpot();
 
     // a ring that runs across the table when something knocks the fixture
     this.shock = new THREE.Mesh(new THREE.RingGeometry(0.96, 1, 96),
@@ -371,6 +381,17 @@ export class Twin {
     });
   }
 
+  /** Screen position (CSS pixels inside the host) of the incident spot, or null when it is not on the part. */
+  spotPosition(): { x: number; y: number; visible: boolean } | null {
+    if (!this.spotDot.visible) return null;
+    const w = this.host.clientWidth;
+    const h = this.host.clientHeight;
+    const v = new THREE.Vector3();
+    this.spotDot.getWorldPosition(v);
+    v.project(this.camera);
+    return { x: (v.x * 0.5 + 0.5) * w, y: (-v.y * 0.5 + 0.5) * h, visible: v.z < 1 };
+  }
+
   setMission(on: boolean): void {
     this.darkFrom = this.dark;
     this.darkTarget = on ? 1 : 0;
@@ -428,7 +449,7 @@ export class Twin {
     }
 
     // the part turns in step with the data; auto-rotation of the camera resumes after a pause
-    this.part.rotation.y = (this.omega * this.source.now()) % (2 * Math.PI);
+    this.part.rotation.y = (this.omega * this.source.now() + this.phase) % (2 * Math.PI);
     this.paintTrail(dt);
     if (!this.controls.autoRotate && t - this.lastInteraction > 6) this.controls.autoRotate = true;
 
@@ -476,8 +497,12 @@ export class Twin {
       rig.spot.material.opacity = flicker;
       rig.spot.scale.setScalar(0.13 + 0.06 * glow + (state === "ok" ? 0 : 0.04 * Math.sin(t * 10)));
       rig.led.color.copy(rig.color).multiplyScalar(HDR);
-      rig.ring.opacity = 0.18 + 0.15 * glow;
+      // with no part speed the spot cannot be placed on the part: the sensor's own ring marks the incident
+      const focus = this.spot !== null && this.spot.sensor === rig.cfg.id && !this.spot.partRpm;
+      rig.ring.color.set(focus ? SPOT_COLOR[this.spot?.severity ?? "info"] : "#8a94a3");
+      rig.ring.opacity = focus ? 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 5)) : 0.18 + 0.15 * glow;
     }
+    this.updateSpot(t);
 
     this.controls.update();
     this.composer.render(dt);
@@ -496,7 +521,7 @@ export class Twin {
       const { id, angle, radius, nominal, range } = rig.cfg;
       const last = this.painted.get(id);
       this.source.forEachSince(id, last ? last.t + 1e-6 : now - 0.4, (t, v) => {
-        const phi = angle - this.omega * t;
+        const phi = angle - this.omega * t - this.phase;
         const x = ((radius * Math.cos(phi)) / (2 * PART_R) + 0.5) * PAINT;
         const y = (1 - ((radius * Math.sin(phi)) / (2 * PART_R) + 0.5)) * PAINT;
         const prev = this.painted.get(id);
@@ -515,6 +540,69 @@ export class Twin {
       });
     }
     this.paintTex.needsUpdate = true;
+  }
+
+  /** Changes the part's speed. The part stays where it is; paint from the old speed is wiped. */
+  setOmega(omega: number): void {
+    if (Math.abs(omega - this.omega) < 1e-9) return;
+    this.phase = this.part.rotation.y - omega * this.source.now();
+    this.omega = omega;
+    this.painted.clear();
+    this.paintCtx.clearRect(0, 0, PAINT, PAINT);
+    this.paintTex.needsUpdate = true;
+  }
+
+  /**
+   * The incident spot. With a known part speed it sits on the part, at the point the
+   * laser measured; without one it stays hidden and the sensor's ring marks the incident.
+   */
+  setSpot(spot: TwinSpot | null): void {
+    this.spot = spot;
+    const color = SPOT_COLOR[spot?.severity ?? "info"];
+    (this.spotDot.material as THREE.SpriteMaterial).color.set(color).multiplyScalar(HDR);
+    (this.spotRing.material as THREE.MeshBasicMaterial).color.set(color).multiplyScalar(HDR);
+    const placed = Boolean(spot?.partRpm);
+    this.spotDot.visible = placed;
+    this.spotRing.visible = placed;
+  }
+
+  private buildSpot(): void {
+    this.spotDot = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.glow, color: SPOT_COLOR.info,
+      toneMapped: false, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+    this.spotDot.scale.setScalar(0.22);
+    this.spotDot.visible = false;
+    this.part.add(this.spotDot);
+
+    this.spotRing = new THREE.Mesh(new THREE.RingGeometry(0.03, 0.04, 48),
+      new THREE.MeshBasicMaterial({ color: SPOT_COLOR.info, transparent: true, opacity: 0.9, toneMapped: false,
+        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.spotRing.rotation.x = -Math.PI / 2;
+    this.spotRing.visible = false;
+    this.part.add(this.spotRing);
+  }
+
+  /**
+   * Places the spot where the paint of the peak was laid: on the newest pass of the peak
+   * that playback has reached (the recording loops). The part turns under it, so it stays
+   * on that point of the part, and it sits under the laser at the moment of the pass.
+   */
+  private updateSpot(t: number): void {
+    const spot = this.spot;
+    const rig = spot ? this.rigs.find((r) => r.cfg.id === spot.sensor) : undefined;
+    if (!spot || !rig || !spot.partRpm || !spot.duration) return;
+    const now = this.source.now();
+    const passes = Math.max(0, Math.floor((now - spot.origin - spot.t) / spot.duration));
+    const measuredAt = spot.origin + passes * spot.duration + spot.t;
+    const phi = rig.cfg.angle - this.omega * measuredAt - this.phase;
+    const x = rig.cfg.radius * Math.cos(phi);
+    const z = -rig.cfg.radius * Math.sin(phi);
+    const y = PART_TOP - TABLE_TOP - 0.15 + 0.012; // just above the paint on the top surface
+    this.spotDot.position.set(x, y, z);
+    this.spotRing.position.set(x, y, z);
+    const pulse = 0.5 + 0.5 * Math.sin(t * 5);
+    this.spotDot.scale.setScalar(0.2 + 0.06 * pulse);
+    this.spotRing.scale.setScalar(1 + 1.4 * pulse);
+    (this.spotRing.material as THREE.MeshBasicMaterial).opacity = 0.95 - 0.55 * pulse;
   }
 
   dispose(): void {

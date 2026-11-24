@@ -16,11 +16,21 @@ function sensorState(id: string): TwinState {
   return status.state;
 }
 
+/** The part turns at the loaded recording's speed when that speed is known, otherwise at the configured one. */
+function turnSpeed(): number {
+  const state = get();
+  const recording = state.status?.recording;
+  const rpm = recording?.active && recording.source?.part_rpm ? recording.source.part_rpm : state.config?.part_rpm ?? 8.6;
+  return (2 * Math.PI * rpm) / 60;
+}
+
 export function TwinView() {
   const config = useStore((s) => s.config);
+  const spot = useStore((s) => s.spot);
   const hostRef = useRef<HTMLDivElement>(null);
   const labelRefs = useRef(new Map<string, HTMLDivElement>());
   const valueRefs = useRef(new Map<string, HTMLSpanElement>());
+  const spotRef = useRef<HTMLDivElement>(null);
   const twinRef = useRef<Twin | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [shake, setShake] = useState<{ key: number; name: string } | null>(null);
@@ -47,9 +57,10 @@ export function TwinView() {
             return latest && Number.isFinite(latest.v) ? latest.v - nominal : null;
           },
           state: sensorState,
-        }, (2 * Math.PI * (config.part_rpm ?? 8.6)) / 60);
+        }, turnSpeed());
         twinRef.current = twin;
         twin.setMission(get().mission);
+        twin.setSpot(get().spot);
       } catch (error) {
         setFailed(error instanceof Error ? error.message : String(error));
         return;
@@ -65,6 +76,12 @@ export function TwinView() {
               el.style.opacity = p.visible ? "1" : "0";
               el.dataset.state = sensorState(p.id);
             }
+          }
+          const at = twin.spotPosition();
+          const spotEl = spotRef.current;
+          if (spotEl) {
+            spotEl.style.transform = at ? `translate(${at.x.toFixed(1)}px, ${at.y.toFixed(1)}px)` : "";
+            spotEl.style.opacity = at?.visible ? "1" : "0";
           }
           if (now - lastText > 100) {
             lastText = now;
@@ -95,6 +112,8 @@ export function TwinView() {
     let lastShakeT = get().lastShake?.t ?? 0;
     return useStore.subscribe((s, prev) => {
       if (s.mission !== prev.mission) twinRef.current?.setMission(s.mission);
+      if (s.spot !== prev.spot) twinRef.current?.setSpot(s.spot);
+      if (s.status?.recording !== prev.status?.recording) twinRef.current?.setOmega(turnSpeed());
       if (s.events.length > lastEvents) {
         for (const event of s.events.slice(lastEvents)) {
           if (event.kind === "vibration") {
@@ -121,8 +140,16 @@ export function TwinView() {
           <p className="muted">{failed}</p>
         </div>
       )}
+      {!failed && spot?.partRpm && (
+        <div className="twin-spot" ref={spotRef} data-severity={spot.severity}>
+          <strong>{spot.incidentId}</strong> measured here
+        </div>
+      )}
+      {!failed && spot && !spot.partRpm && (
+        <div className="twin-spot-note">{spot.incidentId}: enter the part speed to place this spot on the part</div>
+      )}
       {!failed && config?.sensors.map((sensor, i) => (
-        <div key={sensor.id} className="callout" data-state="ok"
+        <div key={sensor.id} className={`callout ${spot?.sensor === sensor.id ? "is-spot" : ""}`} data-state="ok"
              data-side={i < config.sensors.length / 2 && config.sensors.length > 1 ? "left" : "right"}
              ref={(el) => { if (el) labelRefs.current.set(sensor.id, el); else labelRefs.current.delete(sensor.id); }}>
           <span className="callout-dot" />

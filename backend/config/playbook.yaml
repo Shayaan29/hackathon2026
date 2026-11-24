@@ -1,0 +1,52 @@
+# Suggested checks for each kind of alert. The team edits this file on site.
+#
+# Rules for this file:
+# * A suggestion is a check to carry out, never a stated cause.
+# * Every suggestion is shown together with its "reason", which fills in the
+#   measured numbers of that incident.
+# * {placeholders} come from the measurement. Anything the file does not tell us
+#   is printed as "unknown", so nobody mistakes a guess for a measurement.
+# * needs_frequency: true hides the suggestion when no clear frequency was found.
+#
+# Available placeholders: sensor, unit, freq, peak, ratio, count, interval, rate,
+# minutes, value, limit, noise, invalid, tol_low, tol_high, t_text.
+
+all:
+  - text: "Write incident {t_text} into the shift log with the sensor name and the alert type."
+    reason: "{count} alert(s) of this kind in the recording, the first one at {t_text}."
+
+vibration:
+  - text: "Check how {sensor} is clamped and whether the fixture moves while the part turns."
+    reason: "One clear frequency at {freq} Hz was measured. A fixed frequency is what the vibration rule looks for."
+    needs_frequency: true
+  - text: "Check the rotating parts near the measurement for a speed that matches {freq} Hz."
+    reason: "A fixed frequency of {freq} Hz can come from a rotating part. Its speed is not in the file."
+    needs_frequency: true
+  - text: "Compare the same measurement on a known good part under the same settings."
+    reason: "The alert peaked at {peak} {unit}, {ratio} times normal noise. A reference shows whether this pattern is normal for this setup."
+
+noise:
+  - text: "Check the surface of the part at the measured spot for roughness, dirt or a damaged area."
+    reason: "The noise is {ratio} times its normal level and no single frequency stands out."
+  - text: "Check whether the sensor settings (averaging, exposure) changed during the recording."
+    reason: "Settings change the noise level, so a settings change is a plausible first check."
+
+drift:
+  - text: "Check the temperature of {sensor} and of the part, and whether the sensor was warmed up before the measurement."
+    reason: "The averaged value moved {rate} {unit} per minute in a straight line."
+  - text: "Check the zero reference and the mounting of {sensor}."
+    reason: "A steady trend can come from the reference or the mounting as well as from the part."
+  - text: "Decide with the tolerance band of {tol_low} to {tol_high} {unit} whether the process must stop."
+    reason: "At this rate the value reaches the limit in about {minutes} minutes, if the rate holds."
+
+out_of_range:
+  - text: "Check the part and the zero reference: the averaged value left the tolerance band."
+    reason: "The value was {value} {unit} against a limit of {limit} {unit}."
+  - text: "Confirm that the tolerance band {tol_low} to {tol_high} {unit} is the one the team set."
+    reason: "The band used for this check comes from the recording mapping, not from a measurement."
+
+invalid:
+  - text: "Check the target surface: shiny, dark or tilted surfaces give invalid readings."
+    reason: "{invalid} % of the readings in the last second were invalid."
+  - text: "Check the line of sight from {sensor} to the target and any dirt on the optics."
+    reason: "Invalid readings can come from the optical path as well as from the surface."

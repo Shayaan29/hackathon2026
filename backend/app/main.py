@@ -19,6 +19,8 @@ from .config import FRONTEND_DIST, Settings, load_settings
 from .engine import DEMO_KINDS, Engine, EngineError
 from .hub import COCKPIT, PHONE, Hub
 from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
+from .recording_api import add_routes as add_recording_routes
+from .recording_service import RecordingService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
                     datefmt="%H:%M:%S")
@@ -262,6 +264,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/auth/check", dependencies=[Depends(require_token)])
     def auth_check() -> dict[str, bool]:
         return {"ok": True}
+
+    # -- recordings and incidents (the investigation chain) -----------------------
+
+    recording = RecordingService(settings, engine)
+    app.state.recording = recording
+    add_recording_routes(app, recording, require_token, settings.cockpit.team, settings.cockpit.title)
 
     # -- WebSockets ----------------------------------------------------------
 
