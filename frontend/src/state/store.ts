@@ -8,6 +8,7 @@ import type {
   IncidentDetail,
   IncidentRow,
   InsightStep,
+  ManualView,
   StatusMessage,
   TwinSpot,
   VoiceActivity,
@@ -101,6 +102,9 @@ interface CockpitStore {
   incident: IncidentDetail | null;
   /** where the twin shows the selected incident */
   spot: TwinSpot | null;
+  /** the manual panel: the question and the passages it was answered from */
+  manualOpen: boolean;
+  manual: ManualView | null;
 
   patch: (partial: Partial<CockpitStore>) => void;
   addEvent: (event: CockpitEvent) => void;
@@ -159,6 +163,8 @@ export const useStore = create<CockpitStore>((set, get) => ({
   incidentId: null,
   incident: null,
   spot: null,
+  manualOpen: false,
+  manual: null,
 
   patch: (partial) => set(partial),
 

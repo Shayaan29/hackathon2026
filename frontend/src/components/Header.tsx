@@ -52,6 +52,7 @@ export function Header() {
   const tokenOk = useStore((s) => s.tokenOk);
   const recordingOn = useStore((s) => Boolean(s.status?.recording?.active));
   const incidentCount = useStore((s) => (s.status?.recording?.active ? s.status.recording.incidents : 0));
+  const manualOpen = useStore((s) => s.manualOpen);
   const patch = useStore((s) => s.patch);
   const time = useClock();
 
@@ -82,6 +83,11 @@ export function Header() {
         <button className={`tool ${incidentCount ? "is-on" : ""}`}
                 onClick={() => patch({ incidentsOpen: !useStore.getState().incidentsOpen })} title="Incidents (I)">
           <Icon name="bolt" /><span>{incidentCount ? `Incidents (${incidentCount})` : "Incidents"}</span>
+        </button>
+        <button className={`tool ${manualOpen ? "is-on" : ""}`}
+                onClick={() => patch({ manualOpen: !useStore.getState().manualOpen, incidentsOpen: false })}
+                title="Ask the sensor manuals (K)">
+          <Icon name="book" /><span>Manuals</span>
         </button>
         <button className="tool" onClick={() => patch({ qrOpen: true })} title="Phones (Q)">
           <Icon name="phone" /><span>{phones ? `${phones} phone${phones === 1 ? "" : "s"}` : "Phones"}</span>

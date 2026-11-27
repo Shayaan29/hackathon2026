@@ -195,6 +195,10 @@ class Settings:
     engine: EngineConfig
     detection: DetectionConfig
     sensors: tuple[SensorConfig, ...]
+    # manual search (RAG): the folder with the PDF manuals, and the OpenAI models it uses when a key is set
+    knowledge_dir: Path = BACKEND_DIR / "knowledge"
+    embedding_model: str = "text-embedding-3-small"
+    answer_model: str = "gpt-5-mini"
 
     @property
     def voice_enabled(self) -> bool:
@@ -335,4 +339,12 @@ def load_settings(sensors_file: str | Path | None = None) -> Settings:
         engine=_parse_engine(doc.get("engine")),
         detection=_parse_detection(doc.get("detection")),
         sensors=sensors,
+        knowledge_dir=_backend_path(_env("KNOWLEDGE_DIR", "knowledge")),
+        embedding_model=_env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        answer_model=_env("OPENAI_ANSWER_MODEL", "gpt-5-mini"),
     )
+
+
+def _backend_path(raw: str) -> Path:
+    path = Path(raw)
+    return path if path.is_absolute() else BACKEND_DIR / path

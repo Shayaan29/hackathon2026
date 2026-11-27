@@ -18,6 +18,7 @@ from . import __version__, assistant, explore, insights, report, timeline, tools
 from .config import FRONTEND_DIST, Settings, load_settings
 from .engine import DEMO_KINDS, Engine, EngineError
 from .hub import COCKPIT, PHONE, Hub
+from .knowledge import KnowledgeBase, KnowledgeError
 from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
 from .recording_api import add_routes as add_recording_routes
 from .recording_service import RecordingService
@@ -46,6 +47,12 @@ class ReportRequest(BaseModel):
     event_id: str | None = None
 
 
+class ManualRequest(BaseModel):
+    query: str = Field(default="", max_length=500)
+    document: str | None = None
+    k: int = Field(default=6, ge=1, le=12)
+
+
 class DemoRequest(BaseModel):
     sensor: str | None = None
     amplitude: float | None = None
@@ -65,18 +72,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     hub = Hub()
     engine = Engine(settings, hub)
+    knowledge = KnowledgeBase(settings.knowledge_dir, settings.openai_api_key,
+                              settings.embedding_model, settings.answer_model)
+
+    async def warm_up_manuals() -> None:
+        try:
+            await asyncio.to_thread(knowledge.ensure)
+        except Exception as exc:  # noqa: BLE001 - manual search must never stop the cockpit
+            log.warning("manual index not built: %s", exc)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await engine.start()
+        warm = asyncio.create_task(warm_up_manuals())
         log.info("cockpit ready on http://localhost:%s (voice %s)", settings.port,
                  "on, model " + settings.realtime_model if settings.voice_enabled else "off")
         yield
+        warm.cancel()
         await engine.stop()
 
     app = FastAPI(title="KI Sensor Cockpit", version=__version__, lifespan=lifespan)
     app.state.engine = engine
     app.state.settings = settings
+    app.state.knowledge = knowledge
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_methods=["*"], allow_headers=["*"])
 
@@ -213,6 +231,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, "id": rep["id"], "title": rep["title"], "url": f"/report/{rep['id']}",
                 "likely_causes": rep["causes"], "next_steps": rep["actions"],
                 "setup_check": rep["setup"]["summary"]}
+
+    @app.post("/api/tools/search_manual")
+    def tool_search_manual(req: ManualRequest) -> dict[str, Any]:
+        try:
+            return knowledge.tool_result(req.query, req.document, k=min(req.k, 4))
+        except KnowledgeError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    # -- REST: manual search (RAG) ------------------------------------------------
+
+    @app.get("/api/knowledge")
+    def knowledge_index() -> dict[str, Any]:
+        return knowledge.documents()
+
+    @app.get("/api/knowledge/search")
+    def knowledge_search(q: str = Query(..., max_length=500), k: int = Query(5, ge=1, le=12),
+                         document: str | None = None) -> dict[str, Any]:
+        try:
+            return knowledge.search(q, k, document)
+        except KnowledgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/knowledge/ask")
+    def knowledge_ask(req: ManualRequest) -> dict[str, Any]:
+        try:
+            return knowledge.answer(req.query, req.k, req.document)
+        except KnowledgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/knowledge/reload", dependencies=[Depends(require_token)])
+    def knowledge_reload() -> dict[str, Any]:
+        knowledge.ensure(force=True)
+        return knowledge.documents()
+
+    @app.get("/api/knowledge/file/{name}", include_in_schema=False)
+    def knowledge_file(name: str) -> FileResponse:
+        match = next((p for p in knowledge.files() if p.name == name), None)
+        if match is None:
+            raise HTTPException(status_code=404, detail="No such manual")
+        media = "application/pdf" if match.suffix.lower() == ".pdf" else "text/plain; charset=utf-8"
+        return FileResponse(match, media_type=media, content_disposition_type="inline")
 
     # -- REST: setup assistant and incident reports -----------------------------
 

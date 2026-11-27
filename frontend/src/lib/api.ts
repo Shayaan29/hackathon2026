@@ -10,6 +10,8 @@ import type {
   IncidentsResponse,
   InspectResult,
   InsightStep,
+  ManualAnswer,
+  ManualHit,
   MappingDraft,
   RangeData,
   RecordingJob,
@@ -141,6 +143,15 @@ export const api = {
 
   // the copilot's tools, called from the browser when the AI asks for them
   listIncidentsTool: () => post<Record<string, unknown>>("/api/tools/list_incidents"),
+  searchManualTool: (query: string, document?: string) =>
+    post<{ found: boolean; hits?: ManualHit[]; error?: string } & Record<string, unknown>>(
+      "/api/tools/search_manual", { query, document: document ?? null }),
+
+  // the sensor manuals (RAG): ask a question, list what is indexed
+  askManual: (query: string) => post<ManualAnswer>("/api/knowledge/ask", { query }),
+  manuals: () => request<{ documents: { name: string; title: string; passages: number; pages: number }[];
+    search: "keyword" | "hybrid" }>("/api/knowledge"),
+
   investigateIncident: (incidentId?: string) =>
     post<Record<string, unknown>>("/api/tools/investigate_incident", { incident_id: incidentId ?? null }),
 };

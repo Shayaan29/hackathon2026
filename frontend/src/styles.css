@@ -588,3 +588,33 @@ button { cursor: pointer; }
   .report-take { display: none; }
   .demo { left: 12px; right: 12px; width: auto; }
 }
+
+/* the manual panel (RAG): question, answer, and the passages with section and page */
+.manual-ask { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--hair); }
+.manual-ask input {
+  flex: 1; min-width: 0; height: 38px; padding: 0 12px; border-radius: var(--r-ctl);
+  border: 1px solid var(--hair-strong); background: #fff; font: inherit; color: var(--ink);
+}
+.manual-ask input:focus { outline: 2px solid var(--laser); outline-offset: -1px; }
+.manual-ask .solid-btn { height: 38px; padding: 0 14px; font-size: 14px; }
+.manual-result { display: grid; gap: 12px; padding: 14px 16px 22px; }
+.manual-q { margin: 0; font-weight: 600; font-size: 16px; line-height: 1.35; }
+.manual-answer { padding: 12px 14px; border-radius: 12px; background: var(--laser-soft); border: 1px solid rgba(90, 63, 242, 0.18); }
+.manual-answer.is-missing { background: rgba(224, 138, 0, 0.08); border-color: rgba(224, 138, 0, 0.25); }
+.manual-answer pre, .manual-source pre {
+  margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 400 14px/1.5 var(--sans);
+}
+.manual-note { margin: 0; font-size: 12.5px; }
+.manual-sources { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.manual-source details { border: 1px solid var(--hair); border-radius: 10px; background: #fff; }
+.manual-source summary {
+  display: flex; gap: 8px; align-items: baseline; padding: 9px 12px; cursor: pointer; list-style: none;
+}
+.manual-source summary::-webkit-details-marker { display: none; }
+.manual-n { font: 600 13px var(--cond); color: var(--laser-deep); }
+.manual-cite { font-size: 14px; font-weight: 500; line-height: 1.35; }
+.manual-source pre { padding: 0 12px 10px; font: 400 13px/1.5 var(--cond); color: var(--ink); }
+.manual-foot { margin: 0; padding: 0 12px 10px 28px; font-size: 12.5px; line-height: 1.45; color: var(--steel); }
+.manual-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--hair); font-size: 12.5px; }
+.manual-meta .quiet-btn { height: 30px; padding: 0 10px; font-size: 13px; display: inline-flex; align-items: center; text-decoration: none; }
+@media (max-width: 720px) { .manual-dock { left: 14px; width: auto; } }

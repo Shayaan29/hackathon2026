@@ -532,3 +532,44 @@ export interface TwinSpot {
   /** the part speed the recording was analysed with; null: the spot is shown on the sensor only */
   partRpm: number | null;
 }
+
+/** One passage from a sensor manual, with where it is. */
+export interface ManualHit {
+  id: string;
+  doc: string;
+  doc_title: string;
+  section: string;
+  section_title: string;
+  /** page in the PDF file, from 1 */
+  page: number | null;
+  /** the page number printed on the page */
+  printed_page: number | null;
+  labels: string[];
+  citation: string;
+  text: string;
+  footnotes: string[];
+  keyword_score: number;
+  semantic_score: number | null;
+  /** opens the manual at this page */
+  url: string;
+}
+
+export interface ManualAnswer {
+  question: string;
+  found: boolean;
+  answer: string;
+  /** generated: written by the model from the passages; extractive: quoted lines; none: not in the manuals */
+  mode: "generated" | "extractive" | "none";
+  search: "keyword" | "hybrid";
+  sources: ManualHit[];
+}
+
+/** What the manual panel shows. */
+export interface ManualView {
+  query: string;
+  found: boolean;
+  hits: ManualHit[];
+  answer?: string;
+  mode?: ManualAnswer["mode"] | "passages";
+  loading?: boolean;
+}
