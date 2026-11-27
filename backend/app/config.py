@@ -226,6 +226,11 @@ class Settings:
     knowledge_dir: Path = Path(__file__).resolve().parent.parent / "data" / "knowledge"
     recommend_prefetch: bool = True
     openai_base_url: str = "https://api.openai.com/v1"
+    # written answers from the manuals (Manuals panel) and the typed chat when voice is off
+    answer_model: str = "gpt-5-mini"
+    answer_reasoning: str = "low"
+    chat_model: str = "gpt-5-mini"
+    chat_reasoning: str = "low"
 
     @property
     def voice_enabled(self) -> bool:
@@ -372,4 +377,8 @@ def load_settings(sensors_file: str | Path | None = None) -> Settings:
         knowledge_dir=Path(_env("KNOWLEDGE_DIR", str(Path(__file__).resolve().parent.parent / "data" / "knowledge"))),
         recommend_prefetch=_env("RECOMMEND_PREFETCH", "1").lower() not in ("0", "false", "no", "off"),
         openai_base_url=_env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        answer_model=_env("OPENAI_ANSWER_MODEL", "gpt-5-mini"),
+        answer_reasoning=_env("OPENAI_ANSWER_REASONING", "low").lower(),
+        chat_model=_env("OPENAI_CHAT_MODEL", "gpt-5-mini"),
+        chat_reasoning=_env("OPENAI_CHAT_REASONING", "low").lower(),
     )

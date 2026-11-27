@@ -20,6 +20,8 @@ type StageApi = { dissolveFront: () => boolean };
 
 const VIEWS: ChartView[] = ["timeseries", "compare", "spectrum", "drift"];
 const EXPLORE: ExploreChart[] = ["histogram", "boxplot", "scatter", "bar"];
+/** direct commands that run at once without the AI, e.g. "show sensor 1", "back", "clear" */
+const QUICK_COMMAND_RE = /^(please |bitte )?(show|display|plot|open|zeig\w*|öffne|back|go back|zurück|dismiss|clear|close|leeren|mission\b|jarvis|help|hilfe)\b(?![^?]*\?$)/;
 
 /** A chart explanation in progress: which panel, its steps, and how speech is driving it. */
 interface Tour {
@@ -34,6 +36,8 @@ class Controller {
   private socket: LiveSocket | null = null;
   private voice: RealtimeVoice | null = null;
   private recognizer: PushToTalkRecognizer | null = null;
+  /** the typed chat's conversation with the model (voice off) */
+  private chatId: string | null = null;
   private stageApi: StageApi | null = null;
   private lastSensor: string | undefined;
   /** latest data of each chart panel, so explanations can use what is on screen */
@@ -742,10 +746,66 @@ class Controller {
 
   // -- offline commands --------------------------------------------------
 
+  /** Typed chat with the AI copilot: same instructions and tools as voice, run turn by turn. */
+  async chat(text: string): Promise<void> {
+    store().patch({ activity: "thinking" });
+    let items: Record<string, unknown>[] = [{ role: "user", content: text }];
+    try {
+      for (let round = 0; round < 6; round++) {
+        let turn;
+        try {
+          turn = await api.chat(items, this.chatId);
+        } catch (error) {
+          if (!this.chatId || round > 0) throw error;
+          this.chatId = null; // the old conversation expired: start a new one
+          turn = await api.chat(items, null);
+        }
+        this.chatId = turn.id;
+        if (turn.text) this.reply(turn.text);
+        if (!turn.calls.length) break;
+        items = [];
+        for (const call of turn.calls) {
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(call.arguments || "{}");
+          } catch {
+            /* the model sent no valid JSON: run with defaults */
+          }
+          let output: unknown;
+          try {
+            output = await this.runTool(call.name, args);
+          } catch (error) {
+            output = { ok: false, error: error instanceof Error ? error.message : String(error) };
+          }
+          items.push({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(output ?? {}) });
+        }
+      }
+    } catch (error) {
+      this.chatId = null;
+      this.say(`The AI chat is not available: ${error instanceof ApiError ? error.message : String(error)}`);
+    } finally {
+      if (store().activity === "thinking") store().patch({ activity: "idle" });
+    }
+  }
+
+  /** A written answer: the chat shows all of it, the browser voice reads the first sentence. */
+  private reply(text: string): void {
+    store().addCaption("ai", text, true);
+    const plain = text.replace(/\[[^\]]*\]/g, "").replace(/[*#|`_]/g, "").replace(/\s+/g, " ").trim();
+    const first = plain.split(/(?<=[.!?])\s/)[0] ?? plain;
+    this.say(first, "en", false);
+  }
+
   async handleLocal(text: string): Promise<void> {
     const config = store().config;
     if (!config) return;
     const lower = text.toLowerCase();
+    // With AI, the chat answers everything (questions, follow-ups like "sensor 2", small talk) except
+    // short direct commands, which stay instant, and a yes/no to a setting change waiting for confirmation.
+    if (config.voice.enabled && !QUICK_COMMAND_RE.test(lower.trim()) && !store().pending) {
+      await this.chat(text);
+      return;
+    }
     if (/\b(incidents?|investigat\w*|anomal\w*|vorf[aä]ll\w*|untersuch\w*)\b/.test(lower)) {
       await this.incidentCommand(lower);
       return;

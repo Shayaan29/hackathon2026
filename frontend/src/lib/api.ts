@@ -12,7 +12,9 @@ import type {
   InsightStep,
   KnowledgeStatus,
   ManualDocument,
+  ManualAnswer,
   ManualPassage,
+  ChatTurn,
   MappingDraft,
   RangeData,
   RecordingJob,
@@ -153,6 +155,11 @@ export const api = {
     }),
   deleteManual: (name: string) => request<KnowledgeStatus>(`/api/knowledge/${encodeURIComponent(name)}`, { method: "DELETE" }),
   searchManual: (query: string) => post<{ hits: ManualPassage[] }>("/api/knowledge/search", { query, k: 5 }),
+  /** a written answer from the manuals, every value cited with section and page */
+  askManual: (question: string) => post<ManualAnswer>("/api/knowledge/ask", { question }),
+  /** the typed chat with the copilot when voice is off (same tools as voice) */
+  chat: (items: Record<string, unknown>[], previousResponseId: string | null) =>
+    post<ChatTurn>("/api/chat", { items, previous_response_id: previousResponseId }),
   manualUrl: (doc: string, page: number | null) =>
     `/api/knowledge/file/${encodeURIComponent(doc)}${page ? `#page=${page}` : ""}`,
   recommendations: (id: string) => request<RecommendationSet>(`/api/incidents/${encodeURIComponent(id)}/recommendations`),

@@ -26,7 +26,7 @@ export function ManualCard() {
           {shown.map((p) => (
             <li key={p.uid}>
               <a href={api.manualUrl(p.doc, p.page)} target="_blank" rel="noreferrer">
-                {p.doc}{p.page ? `, page ${p.page}` : ""}
+                {p.section && p.section !== p.doc ? p.section : `${p.doc}${p.page ? `, page ${p.page}` : ""}`}
               </a>
               <p>{p.text.length > 300 ? `${p.text.slice(0, 297)}…` : p.text}</p>
             </li>

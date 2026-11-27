@@ -21,7 +21,9 @@ from .config import FRONTEND_DIST, Settings, load_settings
 from .engine import DEMO_KINDS, Engine, EngineError
 from .hub import COCKPIT, PHONE, Hub
 from .knowledge import KnowledgeBase
+from . import chat
 from .knowledge_api import add_routes as add_knowledge_routes
+from .manual_rag import KnowledgeBase as ManualRag
 from .openai_client import OpenAIClient
 from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
 from .recommend import Recommender
@@ -46,6 +48,11 @@ class SettingRequest(BaseModel):
     name: str
     value: Any
     confirmed: bool = False
+
+
+class ChatRequest(BaseModel):
+    items: list[dict[str, Any]] = Field(..., min_length=1, max_length=20)
+    previous_response_id: str | None = None
 
 
 class ReportRequest(BaseModel):
@@ -74,6 +81,8 @@ def create_app(settings: Settings | None = None,
     engine = Engine(settings, hub)
     openai = OpenAIClient(settings.openai_api_key, base_url=settings.openai_base_url, factory=openai_factory)
     knowledge = KnowledgeBase(settings.knowledge_dir, openai, settings.embed_model)
+    rag = ManualRag(settings.knowledge_dir, openai, embedding_model=settings.embed_model,
+                    answer_model=settings.answer_model, reasoning_effort=settings.answer_reasoning)
     recommender = Recommender(settings, knowledge, openai, engine)
     for warning in knowledge.warnings:
         log.warning("manual skipped: %s", warning)
@@ -84,6 +93,7 @@ def create_app(settings: Settings | None = None,
         if openai.enabled and knowledge.passages:
             warm = asyncio.ensure_future(knowledge.warm())
             app.state.warm = warm
+        rag.warm_in_background()
         log.info("manuals: %d documents, %d passages", len(knowledge.documents), len(knowledge.passages))
         log.info("cockpit ready on http://localhost:%s (voice %s)", settings.port,
                  "on, model " + settings.realtime_model if settings.voice_enabled else "off")
@@ -271,6 +281,14 @@ def create_app(settings: Settings | None = None,
         except RealtimeError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
+    @app.post("/api/chat", dependencies=[Depends(require_token)])
+    async def chat_turn(req: ChatRequest) -> dict[str, Any]:
+        """The typed chat when voice is off: one model turn, the browser runs the tool calls."""
+        try:
+            return await chat.respond(settings, openai, req.items, req.previous_response_id)
+        except chat.ChatError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     @app.post("/api/demo/{kind}", dependencies=[Depends(require_token)])
     def demo(kind: str, req: DemoRequest | None = None) -> dict[str, Any]:
         req = req or DemoRequest()
@@ -290,7 +308,8 @@ def create_app(settings: Settings | None = None,
     app.state.recording = recording
     add_recording_routes(app, recording, require_token, settings.cockpit.team, settings.cockpit.title,
                          recommender=recommender)
-    add_knowledge_routes(app, knowledge, recommender, engine, require_token)
+    app.state.rag = rag
+    add_knowledge_routes(app, knowledge, recommender, engine, require_token, rag=rag)
 
     # -- WebSockets ----------------------------------------------------------
 

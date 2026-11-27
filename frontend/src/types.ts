@@ -624,3 +624,33 @@ export interface ManualHit {
   passages: ManualPassage[];
   message: string;
 }
+
+/** A written answer from the manuals: every value cited with section and page. */
+export interface ManualSource {
+  id: string;
+  doc: string;
+  doc_title: string;
+  section: string;
+  section_title: string;
+  page: number | null;
+  printed_page: number | null;
+  citation: string;
+  text: string;
+  footnotes: string[];
+}
+
+export interface ManualAnswer {
+  question: string;
+  found: boolean;
+  answer: string;
+  mode: "generated" | "extractive" | "none";
+  search: "hybrid" | "keyword";
+  sources: ManualSource[];
+}
+
+/** One turn of the typed chat: the model's text and the tools it wants run. */
+export interface ChatTurn {
+  id: string;
+  text: string;
+  calls: { call_id: string; name: string; arguments: string }[];
+}
