@@ -41,7 +41,7 @@ from .openai_client import OpenAIClient, OpenAIError
 
 log = logging.getLogger("cockpit.knowledge")
 
-INDEX_VERSION = 6
+INDEX_VERSION = 7
 DOC_SUFFIXES = (".pdf", ".md", ".markdown", ".txt")
 # notes that live in the manuals folder but are not manuals
 IGNORED_FILES = frozenset({"readme.md", ".gitkeep"})
@@ -50,6 +50,8 @@ EMBED_BATCH = 96
 RRF_K = 60.0
 # meaning outvotes loose keyword matches: "how hot can it get" must find "Temperature range"
 SEMANTIC_WEIGHT = 1.6
+# the best matches by meaning that always stay among the results (cross-language: German datasheets)
+KEEP_SEMANTIC = 3
 # cosine similarity below which an embedding-only match does not count as found
 MIN_SEMANTIC = 0.30
 
@@ -113,6 +115,23 @@ def _tidy(line: str) -> str:
 
 # -- chunks ----------------------------------------------------------------------
 
+_DOC_KINDS = {"dat": "Datasheet", "man": "Manual", "set": "Setup guide", "cat": "Catalogue"}
+
+
+def doc_label(filename: str) -> str:
+    """A short name for citations, from Micro-Epsilon's file names:
+    'dat--optoNCDT-ILD5500-10DR--de.pdf' gives 'Datasheet ILD5500-10DR (de)',
+    'man--optoNCDT-5500-EtherCAT--en.pdf' gives 'Manual 5500 EtherCAT'.
+    Any other file name is used as it is, without its extension."""
+    stem = Path(filename).stem
+    m = re.match(r"^(dat|man|set|cat)--(.+?)(?:-{1,2}(de|en))?$", stem, re.IGNORECASE)
+    if not m:
+        return stem
+    name = re.sub(r"^optoNCDT-", "", m.group(2), flags=re.IGNORECASE).replace("--", " ").replace("-", " ")
+    name = re.sub(r"\bILD(\d+) (\d+\w*)", r"ILD\1-\2", name)  # keep model numbers such as ILD5500-10DR whole
+    lang = (m.group(3) or "").lower()
+    return f"{_DOC_KINDS[m.group(1).lower()]} {name}" + (" (de)" if lang == "de" else "")
+
 @dataclass
 class Chunk:
     id: str
@@ -127,7 +146,7 @@ class Chunk:
     text: str = ""
 
     def citation(self) -> str:
-        parts = []
+        parts = [doc_label(self.doc)]
         if self.section:
             parts.append(f"Section {self.section} {self.section_title}".strip())
         elif self.section_title:
@@ -136,7 +155,7 @@ class Chunk:
         page = self.printed_page or self.page
         if page:
             parts.append(f"Page {page}")
-        return ", ".join(parts) or self.doc_title
+        return ", ".join(p for p in parts if p) or self.doc_title
 
     def search_text(self) -> str:
         head = f"{self.section} {self.section_title}"
@@ -573,6 +592,13 @@ class KnowledgeBase:
             ranks[order] = np.arange(1, len(order) + 1)
             fused += np.where(ranking > 0, weight / (RRF_K + ranks), 0.0)
         order = [i for i in np.argsort(-fused, kind="stable") if fused[i] > 0][:k]
+        if cosine is not None:
+            # keywords cannot match an English question to a German datasheet, so the best matches by
+            # meaning always stay in, in place of the weakest fused ones
+            kept = [int(i) for i in np.argsort(-cosine, kind="stable")[:min(KEEP_SEMANTIC, k)]
+                    if cosine[i] >= MIN_SEMANTIC]
+            order = (kept + [i for i in order if i not in kept])[:k]
+            order.sort(key=lambda i: -fused[i])
         hits = []
         for i in order:
             c = self.chunks[i]
@@ -648,12 +674,15 @@ class KnowledgeBase:
 
     def _generate(self, question: str, hits: list[dict[str, Any]]) -> str:
         context = "\n\n".join(
-            f"[S{n}] {h['doc_title']} | {h['citation']}\n{h['text']}"
+            f"[S{n}] [{h['citation']}]\n{h['text']}"
             + (f"\nFootnotes: {' '.join(h['footnotes'])}" if h["footnotes"] else "")
             for n, h in enumerate(hits, start=1))
         instructions = (
-            "You are a precision technical assistant for Micro-Epsilon sensors. Answer ONLY from the manual "
-            "passages given. Never use outside knowledge for specifications, pin assignments or tolerances. "
+            "You are a precision technical assistant for the Micro-Epsilon optoNCDT 5500 (ILD5500) laser sensors. "
+            "The passages come from its datasheets (some in German), operating manuals and setup guides. Answer "
+            "ONLY from the passages given. Never use outside knowledge for specifications, pin assignments or "
+            "tolerances. A datasheet and a manual can both give a value; prefer the one for the exact model and "
+            "interface asked about (for example the EtherCAT or PROFINET variant), and say when they differ. "
             "Only if the passages contain nothing that answers the question, reply exactly: \"This is not "
             "mentioned in the provided manuals.\" (translated to the language of the question) and nothing else. "
             "If they answer it partly, give what they say and name in one sentence what they leave open; never "
@@ -664,8 +693,9 @@ class KnowledgeBase:
             "line above and below its row label (for example '< ±7.5 µm' above 'Linearity [6]', '% FSO' below); "
             "join the pieces column by column and state the merged value plainly. Include footnotes that apply. "
             "If the value differs between model variants and the question names none, list each variant. "
-            "Start with the direct answer, then conditions and caveats. Cite every value like "
-            "[Section 3.3, Tab. 3.1, Page 12] using the citation given with each passage. Use a Markdown table "
+            "Start with the direct answer, then conditions and caveats. Cite every value with the full citation "
+            "given with its passage, including the document, for example [Manual 5500, Section 3.3, Page 12] or "
+            "[Datasheet ILD5500-10DR (de), Page 1]; never shorten it to the section or page alone. Use a Markdown table "
             "when comparing variants or pins. Answer in the language of the question.")
         body: dict[str, Any] = {"model": self.answer_model, "instructions": instructions,
                                 "input": f"Manual passages:\n\n{context}\n\nQuestion: {question}"}
