@@ -52,7 +52,7 @@ Hard rules:
 - When the operator wants to see something, call show_chart with the matching view, then say in one sentence what it shows.
 - change_setting needs the operator's explicit yes to that exact change. Ask first, for example "Shall I set averaging on sensor one to 64?". Only after a clear yes call it with confirmed set to true.
 - Messages that start with {ALERT_PREFIX} come from the monitoring system, not from the operator. Announce the alert in one or two sentences using only the numbers in it, then offer to show it. Do not call a tool for an alert unless the operator asks for more.
-- If a question has nothing to do with the sensors or this cockpit, say briefly that you only handle the sensor cockpit.
+- If a question has nothing to do with the sensors, their manuals or this cockpit, say briefly that you only handle the sensor cockpit.
 
 Chart views for show_chart:
 - timeseries: one sensor over time with its tolerance band. Default window 300 seconds.
@@ -85,7 +85,14 @@ Charts:
 - Pick the chart that answers the question. Distribution or capability: make_chart histogram. Calm or unsettled periods, morning against afternoon, or comparing spread: make_chart boxplot (group_by hour, 10min, minute or sensor). Whether two sensors move together: make_chart scatter. Ranking sensors by noise, average, spread or alerts: make_chart bar. Live signal, comparison, spectrum or drift: show_chart.
 - make_chart returns findings. Say the most important one in one or two sentences.
 - When asked to explain or walk through a chart, call explain_chart. Then say the returned steps in order, one short sentence per step, in your own words, keeping every number. Start directly with step 1, with no introduction. The cockpit points at each part of the chart while you speak, so do not skip or merge steps.
-- For the whole shift, earlier incidents or "what happened today", call show_shift. To look closely at one incident, call show_shift with its event_id."""
+- For the whole shift, earlier incidents or "what happened today", call show_shift. To look closely at one incident, call show_shift with its event_id.
+
+Manuals and datasheets:
+- For any question about what a sensor can do or how it works: specifications, measuring range, linearity, supply voltage, pin assignment, wiring, LEDs and buttons, interfaces, ASCII commands, settings, mounting, cleaning or laser safety, call search_manual first. Search in English with the key words and the model if it is known, for example "linearity ILD5500-50".
+- Answer only from the returned passages. Keep the exact number, its unit and min or max ("less than 7.5 micrometres"), and the condition that comes with it from the footnotes. Then say where it is, for example "manual section 3.4, page 12". The cockpit shows the passages on screen.
+- If found is false, or the passages do not answer the question, say that the manual does not mention it. Never fill in a specification from memory.
+- If the value depends on the model and the operator did not say which, ask which model, or name the values for the models in the cockpit.
+- The sensors in the cockpit and the manuals can be different models. Never claim a live sensor has a specification unless its model matches the manual."""
 
 
 def tools(settings: Settings) -> list[dict[str, Any]]:
@@ -174,6 +181,25 @@ def tools(settings: Settings) -> list[dict[str, Any]]:
 
 def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
     return [
+        {
+            "type": "function",
+            "name": "search_manual",
+            "description": "Search the sensor manuals and datasheets. Returns the best passages with their "
+                           "citation (section, table, page) and footnotes, or found false. Use it before stating "
+                           "any specification, pin assignment, setting or procedure.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "Key words in English, with the model if known, for example "
+                                             "'supply voltage ILD5500' or 'pin assignment 24-pin M16'."},
+                    "document": {"type": "string",
+                                 "description": "Optional: part of a manual's file name or title to search only "
+                                                "that manual."},
+                },
+                "required": ["query"],
+            },
+        },
         {
             "type": "function",
             "name": "suggest_settings",

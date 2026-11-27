@@ -27,6 +27,7 @@ set up sensors, and lets the jury knock the machine from their own phones.
 | Incident report | One click or "write a report": likely causes, next steps, charts around the alert, a setup check and ticket text. Save as PDF, or scan the code to take it on a phone. |
 | Load a recording | **Load file** in the top bar takes a CSV export from the measuring software. The whole file is checked with the same rules as the live sensors, with no code. The sheet says how it read the file and asks only for what it could not know. |
 | Anomaly chain | Pick an incident in the list. The chart highlights it, the twin marks where on the part it was measured, Epsilon explains why it was flagged, the checks to carry out are listed, and the report and CSV are one click away. |
+| Ask the manuals | "What is the linearity of the ILD5500-50?" The copilot searches the sensor manuals (PDF) and answers only from them, with the exact value, its conditions from the footnotes, and the section and page it came from. The passages are on screen, each with a link that opens the PDF at that page. If the manual does not say it, the copilot says so instead of guessing. |
 | Setup assistant | Reads a sensor's signal and proposes better settings (averaging, measuring rate) with the physics behind it, previews the result on the real last two seconds of data, applies it after a yes and then measures the improvement. |
 
 Everything runs on dummy data out of the box. To go live you replace data,
@@ -96,6 +97,7 @@ frontend appear instantly; restart the backend after Python changes.
 | AI voice key and model | `backend/.env` | `gpt-realtime-mini` while building, the full model for the demo |
 | Cockpit password | `backend/.env` → `COCKPIT_TOKEN` | Protects voice keys, demo controls and setting changes |
 | Real data | **Load file** in the top bar, or `sensors.yaml` → `source` | See the options below |
+| Sensor manuals | PDF files in `backend/knowledge/` | Read on start-up; see [Manual search](#manual-search-rag) |
 
 ### Real data, the quick way: analyse a whole file (no code)
 
@@ -210,6 +212,7 @@ backend/
     insights.py      the steps that explain each chart, tied to places on it
     timeline.py      the shift timeline: picks the finest data for each zoom level
     tools.py         AI tools that run on the backend
+    knowledge.py     manual search (RAG): PDF chunks with section and page, BM25 + optional embeddings
     assistant.py     setup assistant: settings proposal and preview on real data
     report.py        incident reports as JSON and as a printable page
     realtime.py      voice: instructions, tool schemas, client secrets
@@ -221,6 +224,8 @@ backend/
     sources/         simulator, CSV replay, recording playback, MEDAQLib template
   config/sensors.yaml   <- your sensors and thresholds
   config/playbook.yaml  <- the checks to carry out, by kind of alert
+  knowledge/            <- the sensor manuals (PDF, Markdown or text) the copilot may quote
+  scripts/ask_manual.py        ask the manuals from the command line
   scripts/chain_check.py       the anomaly chain, one PASS or FAIL per step
   scripts/make_demo_recording.py   simulated exports in messy formats, for tests
   .env                  <- your keys and switches
@@ -235,6 +240,7 @@ frontend/
   src/components/    twin, readouts, chart stage, shift timeline, copilot, mission HUD, report, setup check
   src/components/RecordingSheet.tsx   Load file: read, check, limits, analyse
   src/components/IncidentDock.tsx     the incident list and the incident panel
+  src/components/ManualPanel.tsx      the manual panel: question, answer, passages with page links
   src/phone/         the judges' phone page: alerts, flashlight, shake detection
 docs/                contract, demo script, team walkthrough, screenshots
 ```
@@ -260,6 +266,7 @@ docs/                contract, demo script, team walkthrough, screenshots
 | Setup check | "Check it" under a sensor, "Check setup" in the conversation, or ask "is sensor 1 set up well?" |
 | Previous chart | **←** or say "go back" (the chart flies back into the stack) |
 | Dismiss chart | **Delete** or say "dismiss" (the chart turns to dust) |
+| Ask the manuals | **K** or the Manuals button, or ask the copilot ("what supply voltage does it need?", "pin assignment of the M16 plug") |
 | Phone QR code | **Q** |
 | Demo controls | **D**, then **1** tap, **2** start drift, **3** stop drift, **4** noise burst, **5** dropout, **6** misconfigure sensor 1, **7** dent in the part, **0** reset |
 | Sound on/off | **M** |
@@ -268,6 +275,46 @@ docs/                contract, demo script, team walkthrough, screenshots
 Setting changes always need a yes: "set averaging on sensor 1 to 64" → the
 copilot asks → "yes". Higher averaging visibly lowers the noise in the
 simulator.
+
+### Manual search (RAG)
+
+The copilot answers questions about the sensors from their manuals, never from
+memory. `backend/knowledge/` ships with the optoNCDT 5500 operating
+instructions; add the manuals of your own sensors as PDF, Markdown or text files
+and they are read the next time anyone asks (or call `POST /api/knowledge/reload`).
+
+How it works:
+
+1. **Reading.** Each PDF is read with its layout kept, so table columns stay
+   apart (shown as ` | `). Running headers and footers are removed, the number
+   printed in the footer becomes the page number, and the table of contents gives
+   the section numbers and titles. The table of contents and the cover are not indexed.
+2. **Chunks with citations.** A passage never crosses a section or a page, so
+   every passage cites exactly: "Section 3.4 Technical data, measuring range,
+   Tab. 3.1, Page 12". Footnotes a passage refers to (`[6]`) are attached to it,
+   because on datasheets the test conditions live there.
+3. **Search.** BM25 keyword search, offline and with no extra service. Model
+   numbers like `ILD5500-50` are kept whole. With `OPENAI_API_KEY` set, every passage
+   is also embedded once (`OPENAI_EMBEDDING_MODEL`, cached in `knowledge/.cache/`)
+   and both rankings are fused, so "how hot can it get" still finds the temperature range.
+4. **Answer.** The voice copilot calls `search_manual`, gets the best passages
+   with the rule to answer only from them, and says the value with its section
+   and page while the passages appear in the Manuals panel. Typed questions
+   without the AI voice go to `POST /api/knowledge/ask`. With a key,
+   `OPENAI_ANSWER_MODEL` writes the answer from the passages. Without one, the
+   matching lines are quoted directly. Either way the answer is "not mentioned"
+   when nothing in the manuals matches.
+
+From the command line, without starting the cockpit:
+
+```bash
+cd backend
+.venv/bin/python scripts/ask_manual.py "What is the linearity of the ILD5500-50?"
+.venv/bin/python scripts/ask_manual.py --search "pin assignment" -k 5
+.venv/bin/python scripts/ask_manual.py --list --rebuild
+```
+
+Scanned PDFs without a text layer cannot be read; run OCR on them first.
 
 ### AI voice
 
@@ -318,7 +365,7 @@ cockpit loads the model from the internet when you switch gestures on.
 ## Tests
 
 ```powershell
-# 84 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline, file reading, incidents, copilot tools (on macOS/Linux: .venv/bin/python -m pytest)
+# 104 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline, file reading, incidents, copilot tools, manual search (on macOS/Linux: .venv/bin/python -m pytest)
 cd backend
 .\.venv\Scripts\python.exe -m pytest
 
@@ -345,3 +392,5 @@ npm run typecheck
 | "No incident was found" after analysing | Check the limits and the part speed in the sheet, then analyse again |
 | Too many or too few alerts | Tune `detection` in `sensors.yaml` (ratios and cooldowns) |
 | Port 8000 busy | Change `PORT` in `.env` |
+| Manuals panel says "No manuals loaded" | Put PDF files in `backend/knowledge/`; check `scripts/ask_manual.py --list` for files that could not be read |
+| A manual answer cites the wrong page | Run `scripts/ask_manual.py --rebuild` after replacing a PDF with a file of the same name and size |

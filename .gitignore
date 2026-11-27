@@ -19,3 +19,6 @@ frontend/public/models/
 Thumbs.db
 .vscode/
 .idea/
+
+# Manual search index (rebuilt from the PDFs on demand)
+backend/knowledge/.cache/

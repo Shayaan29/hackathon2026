@@ -269,3 +269,21 @@ runs, 404 for an unknown incident id.
 
 The chart the cockpit shows for an incident is the chart view `incident`, with
 its `event_id`: `{"view": "incident", "sensors": ["s2"], "event_id": "INC-002"}`.
+
+
+## Added for manual search (RAG)
+
+| Method | Path | Body / query | Returns |
+| --- | --- | --- | --- |
+| GET | `/api/knowledge` | | `{"documents": [{name, title, pages, passages}], "errors", "search": "keyword" \| "hybrid", "folder"}` |
+| GET | `/api/knowledge/search` | `q`, `k` (1-12, default 5), `document` (optional) | `{"query", "found", "mode", "hits": [Hit]}`, plus `message` when nothing matches |
+| POST | `/api/knowledge/ask` | `{"query", "k", "document"}` | `{"question", "found", "answer", "mode": "generated" \| "extractive" \| "none", "search", "sources": [Hit]}` |
+| POST | `/api/knowledge/reload` | token required | as `GET /api/knowledge`, after reading every file again |
+| GET | `/api/knowledge/file/{name}` | | the manual itself; citations link to `...#page=<page>` |
+| POST | `/api/tools/search_manual` | `{"query", "document"}` | the copilot's tool, see below |
+
+A Hit: `{id, doc, doc_title, section, section_title, page (in the PDF, from 1), printed_page (printed in the footer), labels ("Tab. 3.1: ..."), citation, text, footnotes, keyword_score, semantic_score, url}`.
+
+| Tool | Returns |
+| --- | --- |
+| `search_manual` (`query`, `document` optional) | `{"query", "found", "passages": [{source: "S1", document, cite, text, footnotes}], "how_to_answer", "hits"}`. The browser shows `hits` in the Manuals panel and sends the rest to the model. When `found` is false, `how_to_answer` tells the model to say the manual does not mention it |

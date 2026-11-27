@@ -5,6 +5,7 @@ import { Copilot } from "./components/Copilot";
 import { DemoPanel } from "./components/DemoPanel";
 import { Header } from "./components/Header";
 import { IncidentDock } from "./components/IncidentDock";
+import { ManualPanel } from "./components/ManualPanel";
 import { MissionHud } from "./components/MissionHud";
 import { QrOverlay } from "./components/QrOverlay";
 import { RecordingSheet } from "./components/RecordingSheet";
@@ -54,6 +55,7 @@ export default function App() {
       <AssistantPanel />
       <RecordingSheet />
       <IncidentDock />
+      <ManualPanel />
       {gesturesOn && (
         <Suspense fallback={null}>
           <GestureControl />

@@ -13,8 +13,19 @@ import { RealtimeVoice } from "./lib/voice";
 import { useStore } from "./state/store";
 import type {
   ChartSpec, ChartView, CockpitEvent, ExploreChart, IncidentDetail, IncidentRow, InsightStep, RecordingPublic,
-  ServerMessage, SpectrumData, DriftData, ViewData,
+  ManualHit, ServerMessage, SpectrumData, DriftData, ViewData,
 } from "./types";
+
+/** Questions the manuals answer, for typed commands without the AI voice. */
+const MANUAL_QUESTION = /\b(manual|datasheet|data sheet|handbuch|datenblatt|pin ?(out|assignment|belegung)|wiring|specs?|specification|supply voltage|versorgungsspannung|laser class|laserklasse|linearity|linearit[aä]t|repeatability|measuring range|messbereich|baud ?rate|ascii command|protection class|schutzart)\b/;
+
+/** "section 3.4, page 12" for speech. */
+function spokenCitation(hit: ManualHit): string {
+  const page = hit.printed_page ?? hit.page;
+  const parts = [hit.section ? `section ${hit.section}` : hit.section_title];
+  if (page) parts.push(`page ${page}`);
+  return parts.filter(Boolean).join(", ");
+}
 
 type StageApi = { dissolveFront: () => boolean };
 
@@ -673,6 +684,8 @@ class Controller {
       }
       case "list_incidents":
         return api.listIncidentsTool();
+      case "search_manual":
+        return this.searchManual(String(args.query ?? ""), typeof args.document === "string" ? args.document : undefined);
       case "investigate_incident": {
         const incidentId = typeof args.incident_id === "string" && args.incident_id ? args.incident_id : undefined;
         return this.investigate(incidentId);
@@ -699,6 +712,10 @@ class Controller {
     const lower = text.toLowerCase();
     if (/\b(incidents?|investigat\w*|anomal\w*|vorf[aä]ll\w*|untersuch\w*)\b/.test(lower)) {
       await this.incidentCommand(lower);
+      return;
+    }
+    if (MANUAL_QUESTION.test(lower)) {
+      await this.askManual(text);
       return;
     }
     if (/\b(report|bericht|ticket)\b/.test(lower)) {
@@ -852,6 +869,40 @@ class Controller {
   }
 
   /** Caption plus browser speech (offline mode and alert fallback). */
+  // -- the sensor manuals (RAG) ---------------------------------------------
+
+  /** The voice copilot's tool: passages for the model, and the same passages on screen. */
+  async searchManual(query: string, document?: string): Promise<unknown> {
+    store().patch({ manualOpen: true, incidentsOpen: false, manual: { query, found: false, hits: [], loading: true } });
+    try {
+      const { hits = [], ...forModel } = await api.searchManualTool(query, document);
+      store().patch({ manual: { query, found: Boolean(forModel.found), hits, mode: "passages" } });
+      return forModel;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      store().patch({ manual: { query, found: false, hits: [], answer: message, mode: "none" } });
+      return { ok: false, error: message };
+    }
+  }
+
+  /** A typed or spoken question without the AI voice: the backend answers from the manuals. */
+  async askManual(question: string): Promise<void> {
+    store().patch({ manualOpen: true, incidentsOpen: false, activity: "thinking",
+      manual: { query: question, found: false, hits: [], loading: true } });
+    try {
+      const result = await api.askManual(question);
+      store().patch({ manual: { query: question, found: result.found, hits: result.sources,
+        answer: result.answer, mode: result.mode } });
+      const top = result.sources[0];
+      if (!result.found || !top) this.say("The manuals do not mention this.");
+      else this.say(`The answer from the manual is on screen. It is in ${spokenCitation(top)}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      store().patch({ manual: { query: question, found: false, hits: [], answer: message, mode: "none" } });
+      this.say(message);
+    }
+  }
+
   say(text: string, lang: Lang = "en", caption = true): void {
     if (caption) store().addCaption("ai", text, true);
     if (!store().soundOn) {
@@ -957,11 +1008,16 @@ class Controller {
         if (s.reportId || s.assistantFor) s.patch({ reportId: null, assistantFor: null });
         else if (s.recordingOpen) s.patch({ recordingOpen: false });
         else if (s.incidentsOpen) s.patch({ incidentsOpen: false });
+        else if (s.manualOpen) s.patch({ manualOpen: false });
         else s.patch({ qrOpen: false, demoOpen: false, alert: null });
         break;
       case "i":
       case "I":
         s.patch({ incidentsOpen: !s.incidentsOpen });
+        break;
+      case "k":
+      case "K":
+        s.patch({ manualOpen: !s.manualOpen, incidentsOpen: false });
         break;
       case "j":
       case "J":
