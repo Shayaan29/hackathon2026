@@ -26,10 +26,23 @@ function Health() {
     return st && st.state !== "ok" ? [{ name: s.name, state: st.state, kinds: st.active }] : [];
   });
   const fallback = sensors.some((s) => status?.sensors[s.id]?.source.fallback);
+  // a real sensor that is not delivering good readings matters more than any alert
+  const notLive = sensors.flatMap((s) => {
+    const live = status?.sensors[s.id]?.live;
+    return live && live.state !== "streaming" ? [{ name: s.name, live }] : [];
+  });
+  if (notLive.length) {
+    const { name, live } = notLive[0];
+    const what = live.state === "offline" ? "sensor not connected"
+      : live.state === "no_data" ? "connected, no readings" : "no valid readings";
+    return <div className="health health-warning" title={live.message}><span />{name}: {what}</div>;
+  }
   if (!problems.length) {
+    const isLive = sensors.some((s) => status?.sensors[s.id]?.live?.state === "streaming");
     return (
       <div className="health health-ok"><span />
-        All {sensors.length} sensors in tolerance{fallback ? " (simulated data)" : ""}
+        {sensors.length === 1 ? "Sensor in tolerance" : `All ${sensors.length} sensors in tolerance`}
+        {fallback ? " (simulated data)" : isLive ? " (live data)" : ""}
       </div>
     );
   }
@@ -52,6 +65,7 @@ export function Header() {
   const tokenOk = useStore((s) => s.tokenOk);
   const recordingOn = useStore((s) => Boolean(s.status?.recording?.active));
   const incidentCount = useStore((s) => (s.status?.recording?.active ? s.status.recording.incidents : 0));
+  const manualCount = useStore((s) => s.knowledge?.documents.length ?? 0);
   const patch = useStore((s) => s.patch);
   const time = useClock();
 
@@ -79,6 +93,10 @@ export function Header() {
                 title="Load a recording file">
           <Icon name="doc" /><span>{recordingOn ? "Recording" : "Load file"}</span>
         </button>
+        <button className={`tool ${manualCount ? "is-on" : ""}`} onClick={() => patch({ manualsOpen: true })}
+                title="Manuals the AI reads">
+          <Icon name="book" /><span>{manualCount ? `Manuals (${manualCount})` : "Manuals"}</span>
+        </button>
         <button className={`tool ${incidentCount ? "is-on" : ""}`}
                 onClick={() => patch({ incidentsOpen: !useStore.getState().incidentsOpen })} title="Incidents (I)">
           <Icon name="bolt" /><span>{incidentCount ? `Incidents (${incidentCount})` : "Incidents"}</span>
@@ -89,7 +107,7 @@ export function Header() {
         <button className={`tool ${gesturesOn ? "is-on" : ""}`} onClick={() => patch({ gesturesOn: !gesturesOn })} title="Hand gestures">
           <Icon name="hand" />
         </button>
-        <button className={`tool ${soundOn ? "" : "is-off"}`} onClick={() => controller.toggleSound()} title="Sound (M)">
+        <button className={`tool ${soundOn ? "" : "is-off"}`} onClick={() => controller.toggleSound()} title="Voice on or off (M)">
           <Icon name={soundOn ? "speaker" : "mute"} />
         </button>
         <button className="tool" onClick={() => patch({ demoOpen: !useStore.getState().demoOpen })} title="Demo controls (D)">

@@ -35,6 +35,7 @@ th { color: #5b6573; font-weight: 600; font-size: 13px; }
 .tag.unknown { background: #fff4d6; color: #7a5a00; }
 ol li, ul li { margin-bottom: 8px; }
 .reason { color: #5b6573; font-size: 14px; display: block; margin-top: 2px; }
+.source { display: block; margin: 4px 0 0 12px; padding-left: 10px; border-left: 3px solid #0a84a6; color: #27323f; font-size: 14px; font-style: italic; }
 .note { color: #5b6573; font-size: 14px; }
 figure { margin: 14px 0; }
 figcaption { font-size: 13px; color: #5b6573; margin-top: 2px; }
@@ -100,7 +101,33 @@ def _panel(sensor: dict[str, Any], snap: dict[str, Any], highlight: dict[str, fl
     return f"<figure>{''.join(parts)}<figcaption>{caption}</figcaption></figure>"
 
 
-def render_html(incident: dict[str, Any], team: str = "", title_prefix: str = "KI Sensor Cockpit") -> str:
+def _recommendations_html(result: dict[str, Any] | None) -> str:
+    """The verified AI recommendations, when they have been prepared for this incident."""
+    if not result or result.get("status") != "ai" or not result.get("recommendations"):
+        return ""
+    facts = {f["id"]: f["text"] for f in result.get("facts", [])}
+    items = []
+    for rec in result["recommendations"]:
+        based = "; ".join(_esc(facts[i]) for i in rec.get("facts", []) if i in facts)
+        quotes = "".join(
+            f"<span class='source'>\u201c{_esc(src['quote'])}\u201d, {_esc(src['doc'])}"
+            + (f", page {_esc(src['page'])}" if src.get("page") else "") + "</span>"
+            for src in rec.get("sources", []))
+        items.append(f"<li>{_esc(rec['action'])}<span class='reason'>Why: {_esc(rec['why'])}</span>"
+                     + (f"<span class='reason'>Based on: {based}</span>" if based else "") + quotes + "</li>")
+    dropped = int(result.get("dropped") or 0)
+    dropped_text = (f" {dropped} draft{'s' if dropped != 1 else ''} failed the checks and "
+                    f"{'were' if dropped != 1 else 'was'} left out." if dropped else "")
+    return ("<h2>Recommended next steps</h2>"
+            f"<p class='note'>Drafted by {_esc(result.get('model', ''))} from the measured numbers above and "
+            f"{_esc(result.get('manuals', 0))} loaded manual(s). A step is kept only if its numbers come from the "
+            f"data or the quote and its quote is word for word in the manual.{dropped_text} "
+            "These are checks to carry out, not a diagnosis.</p>"
+            f"<ol>{''.join(items)}</ol>")
+
+
+def render_html(incident: dict[str, Any], team: str = "", title_prefix: str = "KI Sensor Cockpit",
+                recommendations: dict[str, Any] | None = None) -> str:
     snap = incident["snapshot"]
     source = incident.get("source", {})
     status = STATUS_TEXT.get(incident["status"], incident["status"])
@@ -152,6 +179,7 @@ def render_html(incident: dict[str, Any], team: str = "", title_prefix: str = "K
   <h2>Location</h2>
   <p>{location_text}</p>
   <p class='note'>{twin_text} Position on the part: {_esc(rpm_text)}.</p>
+  {_recommendations_html(recommendations)}
   <h2>Suggested checks</h2>
   <p class='note'>These are checks to carry out, not a diagnosis. Each one shows the measured numbers behind it.</p>
   <ol>{suggestions}</ol>

@@ -70,3 +70,8 @@ export function twinSpot(detail: IncidentDetail, recording: RecordingPublic | nu
 export function incidentLine(detail: { id: string; title: string }): string {
   return `${detail.id} · ${detail.title}`;
 }
+
+/** The key under which an incident's recommendations are kept: a new recording never reuses an old answer. */
+export function recKey(detail: { id: string; source: { digest: string } }): string {
+  return `${detail.source.digest}:${detail.id}`;
+}

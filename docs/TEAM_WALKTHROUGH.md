@@ -126,7 +126,8 @@ so in the report.
 9. Read the incident panel for INC-001, from top to bottom.
 
    Expected: the title, the time, the sensor and the status "open". Then, in
-   order: Checks, What the data shows, Checks to carry out, Not known from the
+   order: Checks, What the data shows, Recommended next steps (when the AI key is set), Checks to carry out (called
+   Rule based checks when the AI steps are shown), Not known from the
    file, and Where on the part, which gives an angle and a turn. A check marked
    "not found" means the rule did not find that pattern. It is not an error.
 10. Click INC-002.
@@ -140,7 +141,7 @@ so in the report.
     Expected: the explanation runs one step at a time. With the AI voice
     connected, Epsilon speaks, and each marker appears as its sentence starts.
     Without it, the browser voice speaks. If you hear nothing, press **M** to
-    turn the sound on. The chart panel shows a step counter, such as "Step 2
+    turn the voice on. The chart panel shows a step counter, such as "Step 2
     of 6", that counts up.
 12. In the copilot box at the bottom right ("Ask Epsilon something"), type
     `incident 2`, and press Enter.
@@ -260,7 +261,7 @@ Other keys and commands:
     Expected: the incident report of the latest live alert opens.
 14. Press **M**.
 
-    Expected: the sound switches off, and pressing **M** again switches it on.
+    Expected: the voice switches off, and pressing **M** again switches it on.
 
 ---
 
@@ -402,8 +403,16 @@ Fill this in for yourself. Write "yes", or describe what you saw.
 - Epsilon's numbers come from the results of the cockpit's own tools, but the
   sentences are not checked one by one. When in doubt, compare them with the
   numbers on the screen.
-- The live sensor driver (MEDAQLib) is still a template. The cockpit analyses
-  files now. Live sensors need the driver.
+- The optoNCDT 5500 (ILD5500) is read live over Ethernet (README, "Real data,
+  option C"). That driver was written from the operating instructions and tested
+  against a stand-in (`scripts/fake_ild5500.py`), so the real sensor is its final
+  test: run `scripts\sensor_check.py` first. The MEDAQLib source for other
+  sensor types is still a template.
+- With the live sensor the demo buttons and the phone shake cannot inject a knock
+  or a drift: there is no simulator behind them, and the cockpit answers that the
+  source does not support demo events. A real tap on the table or the fixture is
+  found as usual. The setup assistant cannot push settings into the real sensor
+  either: averaging and measuring rate are changed in the sensor's web page.
 - The AI voice needs an OpenAI key and internet. Typed commands and the browser
   voice work without them.
 
@@ -423,6 +432,8 @@ Fill this in for yourself. Write "yes", or describe what you saw.
 | The copilot says "locked" | Click the Unlock button in the top bar, or open the cockpit with `?token=` and your token. |
 | Port 8000 is busy | Change `PORT` in `backend/.env`, restart, and open the new port. |
 | Excel puts the CSV into one column | Choose Data, From Text/CSV, with semicolon as the separator and comma as the decimal sign. |
+| The top bar says "sensor not connected" | In `backend`, run `.venv\Scripts\python.exe scripts\sensor_check.py`. It names the cause: cable, laptop address, sensor address or port, or an output that is not set to Ethernet. |
+| The sensor's web page does not open | Give the laptop's Ethernet adapter the address `169.254.168.10` with mask `255.255.0.0`, then open `http://169.254.168.150`. |
 
 ---
 
@@ -433,6 +444,35 @@ Fill this in for yourself. Write "yes", or describe what you saw.
 - `backend/scripts/make_demo_recording.py`: writes the test formats (Part 6).
 - `backend/config/playbook.yaml`: the checks to carry out, by kind of alert.
 - `backend/config/sensors.yaml`: sensor names, tolerances, part speed, and the copilot's name.
+- `backend/config/sensors.live.yaml`: the same for the real optoNCDT 5500. Switch it on with `SENSORS_FILE=config/sensors.live.yaml` in `backend/.env`.
+- `backend/scripts/sensor_check.py`: checks the connection to the live sensor and says what to fix.
+- `backend/scripts/fake_ild5500.py`: plays an optoNCDT 5500 on the laptop, to rehearse without the sensor.
 - `docs/DEMO_SCRIPT.md`: the pitch. Section 6 is the anomaly chain.
 - `docs/CONTRACT.md`: the messages, the endpoints and the copilot's tools.
 - `README.md`: setup and the rest of the features.
+
+---
+
+## Manuals and recommendations (needs the OpenAI key and the manuals)
+
+1. Put the key into `backend/.env` and the manuals (PDF) into `backend/data/knowledge/`.
+2. In `backend`, run `.venv\Scripts\python.exe scripts\rag_check.py`.
+
+    Expected: PASS lines for the key, the manuals, the search and a recommendation. WARN lines tell you what is
+    missing and what still works. Nothing is printed twice and the key is never shown.
+3. Start the cockpit, click **Manuals** in the top bar.
+
+    Expected: your manuals are listed with their pages. Type a question under "Try a question", for example
+    "why does the value jump on a shiny target", and press Search. Expected: passages with the document and page.
+4. Load the demo recording, click **Incidents**, click INC-001.
+
+    Expected: "Recommended next steps" appears, first with "Reading the manuals and checking every number…", then
+    with numbered steps. Each step has chips ("Based on: Dominant frequency: 26.0 Hz"). A step marked "From the manual"
+    shows a quote and a link such as "man--optoNCDT.pdf, page 12". Click the link: the PDF opens on that page.
+    The line below the steps says how many drafts the checker left out.
+5. Press and hold the voice button and ask: "How do I mount the sensor?"
+
+    Expected: a card "From the manuals" appears with the passages, and Epsilon names the document and the page.
+6. Remove your key from `.env`, restart, open the same incident.
+
+    Expected: "Rule based checks are shown below. The AI is off because no OpenAI key is set." The cockpit keeps working.

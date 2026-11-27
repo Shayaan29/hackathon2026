@@ -31,7 +31,8 @@ set up sensors, and lets the jury knock the machine from their own phones.
 
 Everything runs on dummy data out of the box. To go live you replace data,
 not code: sensor names and tolerances in one YAML file, the API key in `.env`,
-and a CSV export loaded in the top bar (or the MEDAQLib template for live sensors).
+and either a CSV export loaded in the top bar or a Micro-Epsilon optoNCDT 5500
+connected by Ethernet cable (see "Real data, option C").
 
 The eight hours of earlier incidents on the shift timeline are made up by the
 simulator so the demo has a past. With a recording or a live sensor nothing is
@@ -95,7 +96,7 @@ frontend appear instantly; restart the backend after Python changes.
 | Alert thresholds | `sensors.yaml` → `detection` | Tune at the event with real table taps |
 | AI voice key and model | `backend/.env` | `gpt-realtime-mini` while building, the full model for the demo |
 | Cockpit password | `backend/.env` → `COCKPIT_TOKEN` | Protects voice keys, demo controls and setting changes |
-| Real data | **Load file** in the top bar, or `sensors.yaml` → `source` | See the options below |
+| Real data | **Load file** in the top bar, `sensors.yaml` → `source`, or `SENSORS_FILE=config/sensors.live.yaml` in `.env` for the live optoNCDT 5500 | See the options below |
 
 ### Real data, the quick way: analyse a whole file (no code)
 
@@ -109,6 +110,26 @@ frontend appear instantly; restart the backend after Python changes.
 The same steps run from the command line, with one PASS or FAIL per step:
 `backend/.venv/bin/python scripts/chain_check.py data/my_file.csv --rpm 8.6`
 (add `--rate 1000` for a file without a time column).
+
+### Recommendations from the manuals (needs the OpenAI key)
+
+Each incident gets **Recommended next steps**: what to check, in order, with the evidence next to it.
+
+1. Put the key into `backend/.env` (`OPENAI_API_KEY=...`).
+2. Download the manuals of your sensors (micro-epsilon.com, product page, Downloads) into `backend/data/knowledge/`,
+   or add them in the cockpit under **Manuals**. PDFs stay out of git.
+3. Run `backend/.venv/bin/python scripts/rag_check.py` once. It prints PASS, WARN or FAIL for the key, the manuals,
+   the search and a real recommendation, and shows which quote came from which page.
+
+How a recommendation is made: the analysis writes down the measured facts of the incident (F1, F2, ...). The manual
+passages that match the kind of incident are found by keywords and, with a key, by meaning. A language model drafts
+a few recommendations that must cite facts and quote passages. Plain code then checks every draft: it cites a real
+fact, every number in it appears in the measured data or in its quote, every quote is word for word in the passage,
+and no cause is stated as certain. Drafts that fail are left out and counted on screen. If the AI is not available,
+the fixed checks from `config/playbook.yaml` are shown and the screen says why. Quotes link to the PDF page.
+
+By voice, ask Epsilon a question about the sensor ("how do I mount it?"): it looks it up in the manuals, shows the
+passages on screen and names the page.
 
 ### Real data, option A: replay a file as a live sensor (YAML)
 
@@ -133,12 +154,73 @@ in `backend/` creates `data/sample_recording.csv` with a tap and a dropout.
 
 ### Real data, option B: live sensor through MEDAQLib
 
-`backend/app/sources/medaqlib.py` is a template. Fill in `_connect()` and
-`_read_raw()` from the Python example that ships with MEDAQLib, then set
-`type: medaqlib` with `dll_path`, `sensor_type` and `ip_address`. Scaling,
-invalid readings and resampling are already handled. If the live source
-fails to start, that sensor falls back to the simulator and the cockpit shows
-"fallback" in the top bar, so the demo never dies.
+`backend/app/sources/medaqlib.py` is a template for other sensor types. Fill
+in `_connect()` and `_read_raw()` from the Python example that ships with
+MEDAQLib, then set `type: medaqlib` with `dll_path`, `sensor_type` and
+`ip_address`. Scaling, invalid readings and resampling are already handled.
+If this source fails to start, that sensor falls back to the simulator and the
+cockpit shows "fallback" in the top bar.
+
+### Real data, option C: the optoNCDT 5500 (ILD5500) live over Ethernet
+
+The cockpit reads the sensor directly over its Ethernet interface (manual
+chapter 9, "Server TCP/IP"). No driver and no extra software are needed. The
+sensor is never put on the internet: it talks to the laptop that runs the
+cockpit, and the browsers (and the judges' phones, through the tunnel) talk to
+the cockpit.
+
+```
+ sensor ── Ethernet cable ── laptop (cockpit) ── browser, or phones through the tunnel
+```
+
+1. Power the sensor with 12 to 30 V DC (24 V typical): red wire to +, blue wire to 0 V.
+   If the sensor says "Laser is off", connect the black wire (pin 3) to the blue wire (0 V, pin 17).
+2. Plug an Ethernet cable from the sensor into the laptop.
+3. Give the laptop's Ethernet adapter a fixed address: IP `169.254.168.10`, subnet mask `255.255.0.0`.
+   (Windows: Settings, Network & Internet, Ethernet, IP assignment, Edit, Manual.)
+   The sensor leaves the factory with the address `169.254.168.150`.
+4. Open `http://169.254.168.150` in the browser. This is the sensor's own web page. If the address was changed,
+   find it with Micro-Epsilon **sensorTOOL**.
+5. In the web page set the sensor to send its data:
+   - Settings, Outputs: under **Output interface** choose Ethernet and switch Analog output off (the factory
+     setting is analog).
+   - Ethernet settings: **Measurement value transmission** = Server TCP/IP, port `1024`.
+   - Ethernet data output: tick **DIST1** only, and leave VIDEO off.
+   - Save it as a parameter set so it survives a restart.
+   (The same can be typed into the search field of the web page:
+   `MEASTRANSFER SERVER/TCP 1024`, `OUTPUT ETHERNET`, `OUT_ETH DIST1`.)
+6. Close the sensor's web chart and sensorTOOL, so that only the cockpit reads the sensor. (The manual does not say
+   how many Ethernet connections the sensor serves at once, so keep it to one.)
+7. Let the sensor warm up for about 30 minutes, then check the connection from `backend`:
+   `.\.venv\Scripts\python.exe scripts\sensor_check.py`
+   It prints the article and serial number, readings per second, mean distance, noise and the share of invalid
+   readings, and says in plain words what to fix if something is wrong.
+8. In `backend\.env` set `SENSORS_FILE=config/sensors.live.yaml`. Only if the address or port differ from the
+   defaults, also set `LIVE_SENSOR_HOST=` and `LIVE_SENSOR_PORT=`. Then restart the cockpit.
+9. The top bar says "Sensor in tolerance (live data)" and the sensor tile says "Live sensor 20 kHz" with the address.
+
+In `config/sensors.live.yaml` replace the sensor name and model with the type on the sensor's label
+(ILD5500-10, -25, -50, -100 or -200), and set the tolerance in µm. `range_mm` is only used when
+`reference_mm` is `mid`. The digital twin shows a 3D model of the sensor whenever the model name contains
+ILD5500 or optoNCDT 5500. The housing is the same for all five measuring ranges; the type plate shows which one it is.
+
+How it behaves:
+
+- The reading is the distance to the part. The first second of valid readings sets the zero (the median), so the chart
+  shows the deviation in µm. Set `reference_mm` to a number to use a fixed zero instead.
+- The sensor measures up to 150 kHz. The cockpit averages that down to 500 values per second, in time with the
+  clock, so the alert rules behave as they do on the simulator.
+- If the cable is pulled or the sensor is off, the tile and the top bar say "sensor not connected". The cockpit keeps
+  trying and picks the data up again by itself. It never shows simulated data for a live sensor.
+- "Connected, but most readings are invalid" means the sensor sees no target, the part is outside the measuring
+  range, or the surface is too dark or too shiny. The tile shows the sensor's own status text.
+- The live file has no `settings`, so the setup assistant and the copilot do not push values into the sensor.
+  Averaging and measuring rate are changed in the sensor's web page. The demo injection buttons only work with the
+  simulator.
+- No sensor at hand: `python scripts/fake_ild5500.py --scenario vibration` in `backend/` plays a sensor on
+  `127.0.0.1:1024` whose target starts to shake after 10 seconds. The other scenarios are `quiet`, `drift`,
+  `no-target` and `out-of-range`; `--help` lists the options. Set `LIVE_SENSOR_HOST=127.0.0.1` in `.env` to try the
+  whole chain.
 
 `SOURCE_OVERRIDE=simulator` in `.env` forces dummy data for every sensor:
 the safe switch if hardware misbehaves on stage.
@@ -148,7 +230,7 @@ the safe switch if hardware misbehaves on stage.
 ## How it works
 
 ```
- Sensors (simulator | CSV replay | MEDAQLib)
+ Sensors (simulator | CSV replay | optoNCDT 5500 over Ethernet | MEDAQLib template)
         │  500 samples/s per sensor
         ▼
  Backend (Python, FastAPI)
@@ -186,9 +268,10 @@ the safe switch if hardware misbehaves on stage.
   milliseconds is still visible in the eight-hour view.
 * **Shakes are real detections.** A phone shake knocks the simulated fixture;
   the same rules that watch the real sensors find the vibration.
-* **Spoken alerts.** The backend detects an event, the cockpit chimes, and the
-  event goes into the voice session as a `[MONITORING ALERT]` message, so the
-  copilot speaks first, like Jarvis.
+* **Spoken alerts.** The backend detects an event and puts it into the voice
+  session as a `[MONITORING ALERT]` message, so the copilot speaks first, like
+  Jarvis. The cockpit makes no effect sounds; only the judges' phones play an
+  alert tone.
 * **The API key never reaches the browser.** The backend mints short-lived
   client secrets.
 * **Offline fallback.** Without an API key or internet, typed commands and the
@@ -218,10 +301,13 @@ backend/
     incidents.py     finds the incidents of a whole recording, with evidence and snapshot
     investigate.py   checks, explanation, checks to carry out and location of one incident
     incident_report.py, incident_tools.py    the incident report page and the copilot's incident tools
-    sources/         simulator, CSV replay, recording playback, MEDAQLib template
+    sources/         simulator, CSV replay, recording playback, the live optoNCDT 5500 (ild5500.py), MEDAQLib template
   config/sensors.yaml   <- your sensors and thresholds
+  config/sensors.live.yaml   <- the same for the real optoNCDT 5500, switched on with SENSORS_FILE
   config/playbook.yaml  <- the checks to carry out, by kind of alert
   scripts/chain_check.py       the anomaly chain, one PASS or FAIL per step
+  scripts/sensor_check.py      checks the live sensor connection and says in plain words what to fix
+  scripts/fake_ild5500.py      plays an optoNCDT 5500 on your laptop, to rehearse without the sensor
   scripts/make_demo_recording.py   simulated exports in messy formats, for tests
   .env                  <- your keys and switches
   tests/             pytest suite
@@ -262,7 +348,7 @@ docs/                contract, demo script, team walkthrough, screenshots
 | Dismiss chart | **Delete** or say "dismiss" (the chart turns to dust) |
 | Phone QR code | **Q** |
 | Demo controls | **D**, then **1** tap, **2** start drift, **3** stop drift, **4** noise burst, **5** dropout, **6** misconfigure sensor 1, **7** dent in the part, **0** reset |
-| Sound on/off | **M** |
+| Voice on/off | **M** |
 | Hand gestures | Hand button in the top bar: open palm = back, fist = dismiss, thumbs up = confirm |
 
 Setting changes always need a yes: "set averaging on sensor 1 to 64" → the
@@ -318,12 +404,15 @@ cockpit loads the model from the internet when you switch gestures on.
 ## Tests
 
 ```powershell
-# 84 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline, file reading, incidents, copilot tools (on macOS/Linux: .venv/bin/python -m pytest)
+# 125 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline, file reading, incidents, copilot tools, manuals and recommendations (on macOS/Linux: .venv/bin/python -m pytest)
 cd backend
 .\.venv\Scripts\python.exe -m pytest
 
 # the anomaly chain on a running cockpit: one PASS or FAIL per step
 .\.venv\Scripts\python.exe scripts\chain_check.py
+
+# the manuals and the AI recommendations with your real key (a few cents)
+.\.venv\Scripts\python.exe scripts\rag_check.py
 
 # in frontend
 npm run typecheck
@@ -340,6 +429,9 @@ npm run typecheck
 | Voice connects but never answers | Check the model name in `.env`; look at the browser console for the error |
 | No microphone prompt | Use `http://localhost:…` or HTTPS, not the laptop's IP address |
 | Top bar says "fallback" | The live source failed; the reason is in the sensor tile tooltip and the backend log |
+| Top bar says "sensor not connected" | Run `scripts\sensor_check.py` in `backend`. It names the cause: cable, laptop address, sensor address or port, or an output that is not set to Ethernet. If the sensor connects but sends nothing, close sensorTOOL and the sensor's web chart in case they hold the connection |
+| "Connected, but most readings are invalid" | The sensor sees no target, the part is outside the measuring range, or the surface is too dark or too shiny. The tile shows the sensor's status text |
+| The sensor's web page does not open | The laptop's Ethernet adapter needs an address in the sensor's network: `169.254.168.10`, mask `255.255.0.0` |
 | The sheet asks for a sample rate | The file has no time column. Type its rate in Hz |
 | The twin shows no spot on the part | Type the part speed in the Load a recording sheet. 0 means unknown |
 | "No incident was found" after analysing | Check the limits and the part speed in the sheet, then analyse again |

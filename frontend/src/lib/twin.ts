@@ -13,6 +13,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { buildIld5500, isIld5500 } from "./sensorModel";
 
 export type TwinState = "ok" | "warning" | "critical" | "invalid";
 
@@ -24,6 +25,8 @@ export interface TwinSensor {
   /** where the laser meets the turning part: angle around the axis and distance from it */
   angle: number;
   radius: number;
+  /** model name from the configuration; the optoNCDT 5500 gets its own 3D model, all others a generic body */
+  model?: string;
 }
 
 export interface TwinSource {
@@ -314,14 +317,42 @@ export class Twin {
 
     sensors.forEach((cfg) => {
       const x = cfg.angle === Math.PI ? -cfg.radius : cfg.radius;
-      const body = add(new THREE.BoxGeometry(0.24, 0.42, 0.2), housing, x + 0.05, SENSOR_BOTTOM + 0.21, 0.0, this.gantry);
-      // front window and status LED
-      const windowMat = new THREE.MeshStandardMaterial({ color: "#10131a", roughness: 0.05, metalness: 0.2 });
-      add(new THREE.BoxGeometry(0.2, 0.012, 0.16), windowMat, 0, -0.21 - 0.006, 0, body);
-      const led = new THREE.MeshBasicMaterial({ color: STATE_COLOR.ok, toneMapped: false });
-      const ledMesh = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), led);
-      ledMesh.position.set(0.07, 0.14, 0.101);
-      body.add(ledMesh);
+      const detailed = cfg.model && isIld5500(cfg.model) ? buildIld5500(cfg.model) : null;
+      let led: THREE.MeshBasicMaterial;
+      let anchor: THREE.Object3D;
+      let baseline = 0.11; // laser exit to receiver lens
+      const cablePath: THREE.Vector3[] = [];
+      if (detailed) {
+        detailed.group.position.set(x, SENSOR_BOTTOM, 0);
+        this.gantry.add(detailed.group);
+        led = detailed.led;
+        anchor = detailed.anchor;
+        baseline = detailed.baseline;
+        // the cable leaves next to the holder, steps out in front of the crossbeam and climbs over it
+        const exit = detailed.cableExit;
+        cablePath.push(
+          new THREE.Vector3(x + exit.x, SENSOR_BOTTOM + exit.y, 0),
+          new THREE.Vector3(x + exit.x + 0.03, SENSOR_BOTTOM + exit.y - 0.01, 0.11),
+          new THREE.Vector3(x + exit.x + 0.06, BEAM_Y - 0.1, 0.15),
+          new THREE.Vector3(x + exit.x + 0.06, BEAM_Y + 0.12, 0.16),
+        );
+      } else {
+        const body = add(new THREE.BoxGeometry(0.24, 0.42, 0.2), housing, x + 0.05, SENSOR_BOTTOM + 0.21, 0.0, this.gantry);
+        // front window and status LED
+        const windowMat = new THREE.MeshStandardMaterial({ color: "#10131a", roughness: 0.05, metalness: 0.2 });
+        add(new THREE.BoxGeometry(0.2, 0.012, 0.16), windowMat, 0, -0.21 - 0.006, 0, body);
+        led = new THREE.MeshBasicMaterial({ color: STATE_COLOR.ok, toneMapped: false });
+        const ledMesh = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), led);
+        ledMesh.position.set(0.07, 0.14, 0.101);
+        body.add(ledMesh);
+        anchor = new THREE.Object3D();
+        anchor.position.set(0, 0.21, 0);
+        body.add(anchor);
+        cablePath.push(
+          new THREE.Vector3(x + 0.05, SENSOR_BOTTOM + 0.42, 0.06),
+          new THREE.Vector3(x + 0.05, BEAM_Y + 0.16, 0.14),
+        );
+      }
 
       const emitted = new Beam(0.006, 0.028);
       const reflected = new Beam(0.003, 0.016);
@@ -345,8 +376,7 @@ export class Twin {
       // sensor cable, routed up over the beam and down the nearest post
       const side = x < 0 ? -1 : 1;
       const cable = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(x + 0.05, SENSOR_BOTTOM + 0.42, 0.06),
-        new THREE.Vector3(x + 0.05, BEAM_Y + 0.16, 0.14),
+        ...cablePath,
         new THREE.Vector3(side * 1.25, BEAM_Y + 0.12, 0.16),
         new THREE.Vector3(side * 1.56, BEAM_Y - 0.2, 0.15),
         new THREE.Vector3(side * 1.57, TABLE_TOP + 0.2, 0.15),
@@ -354,14 +384,10 @@ export class Twin {
       add(new THREE.TubeGeometry(cable, 48, 0.014, 8, false),
         new THREE.MeshStandardMaterial({ color: "#1c2027", roughness: 0.7 }), 0, 0, 0, this.gantry);
 
-      const anchor = new THREE.Object3D();
-      anchor.position.set(0, 0.21, 0);
-      body.add(anchor);
-
       this.rigs.push({
         cfg, anchor, emitted, reflected, spot, led, ring,
         emitter: new THREE.Vector3(x, SENSOR_BOTTOM, 0),
-        receiver: new THREE.Vector3(x + 0.11, SENSOR_BOTTOM, 0),
+        receiver: new THREE.Vector3(x + baseline, SENSOR_BOTTOM, 0),
         surface: new THREE.Vector3(x, PART_TOP, 0),
         shown: 0,
         color: STATE_COLOR.ok.clone(),

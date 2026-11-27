@@ -78,6 +78,8 @@ Recordings and incidents:
 - A recording is a file the operator loaded. Its incidents are the anomalies found by analysing the whole file, in time order.
 - For what happened in the recording, or which incidents there are, call list_incidents. Name the count, then the first few with their time, sensor and kind.
 - To explain one incident, or to say what to check, call investigate_incident with its id. Then explain in the order of the returned explanation, one short sentence per point. The cockpit opens that incident and highlights it on the chart and on the twin while you speak.
+- investigate_incident can also return recommendations. When it does, say them after the explanation, in order, one short sentence each. Name the manual document and page when a recommendation has a source. If recommendations is null, say they are being prepared and will appear on screen.
+- For a question about the sensor, its settings, mounting, error values or limits, call search_manual with the question in the operator's words. Answer only from the returned passages, name the document and page, and say so plainly when the loaded manuals do not cover it. The cockpit shows the passages on screen.
 - Call the checks what they are: checks to carry out. Never state a cause as fact.
 - Mention an item under not_known_from_file when it limits the answer, for example an unknown spindle speed.
 
@@ -247,6 +249,19 @@ def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {"incident_id": {"type": "string",
                                                "description": "Incident id such as INC-003, from list_incidents."}},
+            },
+        },
+        {
+            "type": "function",
+            "name": "search_manual",
+            "description": "Look up the loaded sensor manuals. Returns the best matching passages with document "
+                           "and page. Use it for questions about the sensor, its settings, mounting, error values "
+                           "or limits. The cockpit shows the passages on screen.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string",
+                                         "description": "The question or a few keywords, in the operator's words."}},
+                "required": ["query"],
             },
         },
     ]

@@ -58,6 +58,25 @@ export interface CockpitEvent {
   related_sensors: string[];
 }
 
+/** Connection of a real sensor (the optoNCDT 5500 over Ethernet). Absent for dummy data. */
+export interface LiveStatus {
+  kind: string;
+  /** offline: cannot connect. no_data: connected, nothing arrives. invalid: readings arrive but are mostly invalid. */
+  state: "offline" | "no_data" | "streaming" | "invalid";
+  message: string;
+  host: string;
+  port: number;
+  rate_hz: number | null;
+  article: number | null;
+  serial: number | null;
+  samples: number;
+  invalid_percent: number | null;
+  last_status: string | null;
+  reference_mm: number | null;
+  intensity_percent: number | null;
+  temperature_c: number | null;
+}
+
 export interface SensorStatus {
   latest: number | null;
   mean_1s: number | null;
@@ -66,6 +85,7 @@ export interface SensorStatus {
   state: SensorState;
   active: EventKind[];
   source: { type: string; fallback: boolean; error: string | null };
+  live?: LiveStatus | null;
   read_error: string | null;
   settings: Record<string, string | number>;
 }
@@ -531,4 +551,76 @@ export interface TwinSpot {
   duration: number;
   /** the part speed the recording was analysed with; null: the spot is shown on the sensor only */
   partRpm: number | null;
+}
+
+// -- manuals and recommendations ----------------------------------------------------------
+
+export interface RecommendationSource {
+  doc: string;
+  page: number | null;
+  section: string;
+  quote: string;
+}
+
+/** One next step. `basis` says where it comes from: a manual page, the measurements alone, or the fixed rules. */
+export interface Recommendation {
+  id: string;
+  action: string;
+  why: string;
+  basis: "manual" | "data" | "rules";
+  facts: string[];
+  sources: RecommendationSource[];
+}
+
+export interface RecommendationSet {
+  /** ai: drafted by the model and checked. rules: the fixed checks, with a note why. none: nothing prepared yet. */
+  status: "ai" | "rules" | "none";
+  incident: string;
+  ai?: boolean;
+  model?: string;
+  note?: string;
+  dropped?: number;
+  recommendations?: Recommendation[];
+  facts?: { id: string; text: string }[];
+  manuals?: number;
+  passages?: number;
+  seconds?: number;
+  generated?: string;
+}
+
+export interface ManualDocument {
+  name: string;
+  kind: "pdf" | "text" | "markdown";
+  pages: number;
+  passages: number;
+  bytes: number;
+}
+
+export interface KnowledgeStatus {
+  documents: ManualDocument[];
+  passages: number;
+  warnings: string[];
+  digest: string;
+  embeddings: { enabled: boolean; model: string; ready: number; error: string | null };
+  ai: boolean;
+  model: string;
+  prefetching: boolean;
+  cached: number;
+}
+
+export interface ManualPassage {
+  uid: string;
+  doc: string;
+  page: number | null;
+  section: string;
+  text: string;
+  score?: number;
+  via?: string;
+}
+
+/** What a manual lookup found, shown on screen while the copilot speaks about it. */
+export interface ManualHit {
+  query: string;
+  passages: ManualPassage[];
+  message: string;
 }

@@ -8,6 +8,9 @@ import type {
   IncidentDetail,
   IncidentRow,
   InsightStep,
+  KnowledgeStatus,
+  ManualHit,
+  RecommendationSet,
   StatusMessage,
   TwinSpot,
   VoiceActivity,
@@ -101,6 +104,11 @@ interface CockpitStore {
   incident: IncidentDetail | null;
   /** where the twin shows the selected incident */
   spot: TwinSpot | null;
+  /** manuals, and the recommendations per incident ("loading" while the model works) */
+  manualsOpen: boolean;
+  knowledge: KnowledgeStatus | null;
+  recs: Record<string, RecommendationSet | "loading">;
+  manualHit: ManualHit | null;
 
   patch: (partial: Partial<CockpitStore>) => void;
   addEvent: (event: CockpitEvent) => void;
@@ -159,6 +167,10 @@ export const useStore = create<CockpitStore>((set, get) => ({
   incidentId: null,
   incident: null,
   spot: null,
+  manualsOpen: false,
+  knowledge: null,
+  recs: {},
+  manualHit: null,
 
   patch: (partial) => set(partial),
 

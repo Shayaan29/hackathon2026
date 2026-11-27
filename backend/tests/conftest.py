@@ -17,10 +17,13 @@ T0 = 1_700_000_000.0
 
 
 @pytest.fixture()
-def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
+def settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("COCKPIT_TOKEN", "test-token")
     monkeypatch.setenv("SOURCE_OVERRIDE", "")
+    monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path / "knowledge"))
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "")
+    monkeypatch.setenv("RECOMMEND_PREFETCH", "1")
     return load_settings(BACKEND / "config" / "sensors.yaml")
 
 

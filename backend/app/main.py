@@ -7,7 +7,9 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
+
+import httpx
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +20,11 @@ from . import __version__, assistant, explore, insights, report, timeline, tools
 from .config import FRONTEND_DIST, Settings, load_settings
 from .engine import DEMO_KINDS, Engine, EngineError
 from .hub import COCKPIT, PHONE, Hub
+from .knowledge import KnowledgeBase
+from .knowledge_api import add_routes as add_knowledge_routes
+from .openai_client import OpenAIClient
 from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
+from .recommend import Recommender
 from .recording_api import add_routes as add_recording_routes
 from .recording_service import RecordingService
 
@@ -61,14 +67,24 @@ class DemoRequest(BaseModel):
         return {k: v for k, v in self.model_dump().items() if k != "sensor" and v is not None}
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None,
+               openai_factory: Callable[[], httpx.AsyncClient] | None = None) -> FastAPI:
     settings = settings or load_settings()
     hub = Hub()
     engine = Engine(settings, hub)
+    openai = OpenAIClient(settings.openai_api_key, base_url=settings.openai_base_url, factory=openai_factory)
+    knowledge = KnowledgeBase(settings.knowledge_dir, openai, settings.embed_model)
+    recommender = Recommender(settings, knowledge, openai, engine)
+    for warning in knowledge.warnings:
+        log.warning("manual skipped: %s", warning)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await engine.start()
+        if openai.enabled and knowledge.passages:
+            warm = asyncio.ensure_future(knowledge.warm())
+            app.state.warm = warm
+        log.info("manuals: %d documents, %d passages", len(knowledge.documents), len(knowledge.passages))
         log.info("cockpit ready on http://localhost:%s (voice %s)", settings.port,
                  "on, model " + settings.realtime_model if settings.voice_enabled else "off")
         yield
@@ -77,6 +93,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="KI Sensor Cockpit", version=__version__, lifespan=lifespan)
     app.state.engine = engine
     app.state.settings = settings
+    app.state.knowledge = knowledge
+    app.state.recommender = recommender
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_methods=["*"], allow_headers=["*"])
 
@@ -268,8 +286,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # -- recordings and incidents (the investigation chain) -----------------------
 
     recording = RecordingService(settings, engine)
+    recording.after_analysis = recommender.prefetch
     app.state.recording = recording
-    add_recording_routes(app, recording, require_token, settings.cockpit.team, settings.cockpit.title)
+    add_recording_routes(app, recording, require_token, settings.cockpit.team, settings.cockpit.title,
+                         recommender=recommender)
+    add_knowledge_routes(app, knowledge, recommender, engine, require_token)
 
     # -- WebSockets ----------------------------------------------------------
 

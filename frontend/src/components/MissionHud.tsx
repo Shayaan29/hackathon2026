@@ -90,7 +90,7 @@ export function MissionHud() {
   const spokenAfterAlert = lastLine && (!alert || lastLine.t >= alert.t);
   const line = spokenAfterAlert && lastLine.type === "say" ? lastLine.text
     : alert ? `${config.assistant_name} is on it.`
-      : `${config.assistant_name} is watching ${sensors.length} sensors.`;
+      : `${config.assistant_name} is watching ${sensors.length === 1 ? "the sensor" : `${sensors.length} sensors`}.`;
 
   return (
     <div className="hud" aria-hidden="true">

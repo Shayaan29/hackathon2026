@@ -4,16 +4,16 @@ import { api, ApiError, getToken, initToken, setToken } from "./lib/api";
 import { parseCommand, phrase, windowWords, type Intent, type Lang } from "./lib/commands";
 import { KIND_LABEL } from "./lib/format";
 import { setChartTheme } from "./lib/charts";
-import { incidentChart, twinSpot } from "./lib/incidents";
+import { incidentChart, recKey, twinSpot } from "./lib/incidents";
 import { ingest, meters, setServerTime } from "./lib/live";
 import { LiveSocket } from "./lib/socket";
-import { alarm, blip, chime, confirmSound, dissolveSound, setSoundEnabled, unlockAudio, whoosh } from "./lib/sound";
+import { setSoundEnabled, unlockAudio } from "./lib/sound";
 import { PushToTalkRecognizer, recognitionAvailable, speak, stopSpeaking } from "./lib/speech";
 import { RealtimeVoice } from "./lib/voice";
 import { useStore } from "./state/store";
 import type {
-  ChartSpec, ChartView, CockpitEvent, ExploreChart, IncidentDetail, IncidentRow, InsightStep, RecordingPublic,
-  ServerMessage, SpectrumData, DriftData, ViewData,
+  ChartSpec, ChartView, CockpitEvent, ExploreChart, IncidentDetail, IncidentRow, InsightStep, ManualPassage,
+  RecommendationSet, RecordingPublic, ServerMessage, SpectrumData, DriftData, ViewData,
 } from "./types";
 
 type StageApi = { dissolveFront: () => boolean };
@@ -66,6 +66,7 @@ class Controller {
     window.setInterval(() => void this.refreshHints(), 8000);
     window.setTimeout(() => void this.refreshHints(), 3000);
     void this.refreshIncidents();
+    void this.refreshKnowledge();
   }
 
   // -- charts the copilot builds, explanations, the shift timeline -------
@@ -167,7 +168,6 @@ class Controller {
     const shown = Math.min(Math.max(count, panel.tour?.shown ?? 0), tour.steps.length);
     if (shown !== panel.tour?.shown) {
       store().setTour(tour.panelId, { steps: tour.steps, shown });
-      blip(false);
     }
     if (shown >= tour.steps.length) this.finishTour();
   }
@@ -226,13 +226,12 @@ class Controller {
   toggleMission(on = !store().mission): void {
     if (on === store().mission) return;
     setChartTheme(on);
-    whoosh(!on, 0.9);
     window.clearTimeout(this.missionChartTimer);
     // mission mode starts on the machine; charts fly in when something happens
     if (on) store().patch({ stage: [] });
     store().patch({ mission: on, missionSince: on ? Date.now() : store().missionSince });
     const first = store().config?.sensors[0]?.id;
-    if (!on && !store().stage.length && first) this.show({ view: "timeseries", sensors: [first], window_s: 300 }, true);
+    if (!on && !store().stage.length && first) this.show({ view: "timeseries", sensors: [first], window_s: 300 });
   }
 
   private missionChartTimer = 0;
@@ -331,6 +330,7 @@ class Controller {
       incidentsOpen: true,
       spot: twinSpot(detail, store().status?.recording),
     });
+    void this.loadRecommendations(detail);
     this.show({ view: "incident", sensors: [detail.sensor], event_id: id });
     const panelId = store().stage.find((p) => !p.leaving)?.id;
     if (panelId) {
@@ -338,6 +338,53 @@ class Controller {
       if (options.tour) this.startTour(panelId, chart.insights);
     }
     return detail;
+  }
+
+  // -- manuals and recommendations -------------------------------------
+
+  async refreshKnowledge(): Promise<void> {
+    try {
+      store().patch({ knowledge: await api.knowledge() });
+    } catch {
+      // the cockpit works without the manual panel
+    }
+  }
+
+  /** The fixed checks of an incident, shown when the AI recommendations are not available. */
+  private rulesOnly(detail: IncidentDetail, note: string): RecommendationSet {
+    return {
+      status: "rules",
+      incident: detail.id,
+      note,
+      recommendations: detail.suggestions.slice(0, 5).map((s, i) => ({
+        id: `R${i + 1}`, action: s.text, why: s.reason, basis: "rules" as const, facts: [], sources: [],
+      })),
+    };
+  }
+
+  /**
+   * Fetches what the server prepared for this incident, or asks for it. The result is kept
+   * per recording and incident, so reopening an incident shows it at once.
+   */
+  async loadRecommendations(detail: IncidentDetail, force = false): Promise<void> {
+    const key = recKey(detail);
+    const current = store().recs[key];
+    if (current === "loading" || (current && !force)) return;
+    const put = (value: RecommendationSet | "loading") => store().patch({ recs: { ...store().recs, [key]: value } });
+    put("loading");
+    try {
+      let result: RecommendationSet | null = force ? null : await api.recommendations(detail.id);
+      if (!result || result.status === "none") {
+        if (result?.ai === false) {
+          put(this.rulesOnly(detail, "The AI is off because no OpenAI key is set. Rule based checks shown."));
+          return;
+        }
+        result = await api.recommend(detail.id, force);
+      }
+      put(result);
+    } catch (error) {
+      put(this.rulesOnly(detail, error instanceof Error ? error.message : String(error)));
+    }
   }
 
   /** The copilot's investigation: the stage and the twin move to the incident, and the findings are returned to it. */
@@ -388,7 +435,7 @@ class Controller {
         store().patch({ config: message.config, status: message.status });
         setServerTime(message.status.t);
         message.events.forEach((e) => store().addEvent(e));
-        if (!store().stage.length) this.show({ view: "timeseries", sensors: [message.config.sensors[0]?.id ?? "s1"], window_s: 300 }, true);
+        if (!store().stage.length) this.show({ view: "timeseries", sensors: [message.config.sensors[0]?.id ?? "s1"], window_s: 300 });
         break;
       case "status":
         setServerTime(message.t);
@@ -409,7 +456,6 @@ class Controller {
       case "shake":
         store().patch({ lastShake: { name: message.name, sensor: message.sensor, t: message.t, intensity: message.intensity } });
         store().pushFeed({ id: `shake-${message.t}`, t: message.t, type: "shake", name: message.name, sensor: message.sensor });
-        blip(true);
         break;
       case "report":
         store().pushFeed({ id: `rep-${message.id}-${Date.now()}`, t: Date.now() / 1000, type: "report",
@@ -444,8 +490,6 @@ class Controller {
         if (store().alert?.id === event.id) store().patch({ alert: null });
       }, 15000);
     }
-    if (event.severity === "critical") alarm();
-    else chime();
     if (store().mission) {
       // hands-free pitch: the matching chart follows the alert, and clears itself later,
       // unless someone has asked for another chart in the meantime
@@ -473,7 +517,7 @@ class Controller {
 
   // -- the stage -------------------------------------------------------
 
-  show(spec: ChartSpec, quiet = false): { ok: boolean; view: string; sensors: string[] } {
+  show(spec: ChartSpec): { ok: boolean; view: string; sensors: string[] } {
     const sensors = spec.sensors?.length ? spec.sensors : [this.lastSensor ?? this.firstSensor()];
     const clean: ChartSpec = { ...spec, sensors };
     this.endTour();
@@ -482,7 +526,6 @@ class Controller {
     }
     store().pushPanel(clean);
     this.lastSensor = clean.sensors[0];
-    if (!quiet) whoosh(false);
     return { ok: true, view: clean.view, sensors: clean.sensors };
   }
 
@@ -493,7 +536,6 @@ class Controller {
     const front = visible[0];
     store().markLeaving(front.id, "forward");
     window.setTimeout(() => store().removePanel(front.id), 750);
-    whoosh(true);
     return true;
   }
 
@@ -504,7 +546,6 @@ class Controller {
     this.stageApi?.dissolveFront();
     store().markLeaving(front.id, "dust");
     window.setTimeout(() => store().removePanel(front.id), 60);
-    dissolveSound();
     return true;
   }
 
@@ -579,7 +620,6 @@ class Controller {
     this.pttActive = true;
     unlockAudio();
     stopSpeaking();
-    blip(true);
     if (this.aiVoice) {
       this.voice?.pttStart();
       return;
@@ -602,7 +642,6 @@ class Controller {
   async pttUp(): Promise<void> {
     if (!this.pttActive) return;
     this.pttActive = false;
-    blip(false);
     if (this.aiVoice) {
       this.voice?.pttEnd();
       return;
@@ -671,6 +710,17 @@ class Controller {
         const eventId = typeof args.event_id === "string" && args.event_id ? args.event_id : undefined;
         return api.createReport(eventId);
       }
+      case "search_manual": {
+        const query = String(args.query ?? "").trim();
+        try {
+          const result = await api.searchManualTool(query);
+          const passages = Array.isArray(result.passages) ? (result.passages as ManualPassage[]) : [];
+          store().patch({ manualHit: { query, passages, message: String(result.message ?? "") } });
+          return result;
+        } catch (error) {
+          return { ok: false, error: error instanceof ApiError ? error.message : String(error) };
+        }
+      }
       case "list_incidents":
         return api.listIncidentsTool();
       case "investigate_incident": {
@@ -680,7 +730,6 @@ class Controller {
       case "change_setting": {
         try {
           const result = await api.changeSetting(sensor, String(args.name), String(args.value), Boolean(args.confirmed));
-          if (result.ok) confirmSound();
           return result;
         } catch (error) {
           return { ok: false, error: error instanceof ApiError ? error.message : String(error) };
@@ -829,7 +878,6 @@ class Controller {
         try {
           const result = await api.changeSetting(pending.sensor, pending.name, pending.value, true);
           if (result.ok) {
-            confirmSound();
             this.say(phrase("set_done", lang, { setting: pending.name.replace(/_/g, " "), name: this.sensorName(pending.sensor), value: String(result.new) }), lang);
           } else {
             this.say(phrase("set_failed", lang, { error: String(result.error) }), lang);
@@ -880,7 +928,6 @@ class Controller {
       if (store().pending) void this.handleLocal("yes");
       else if (this.aiVoice) this.voice?.sendText("Yes.");
       else if (alertEvent) this.showForEvent(alertEvent);
-      confirmSound();
     }
   }
 
@@ -955,6 +1002,8 @@ class Controller {
         break;
       case "Escape":
         if (s.reportId || s.assistantFor) s.patch({ reportId: null, assistantFor: null });
+        else if (s.manualsOpen) s.patch({ manualsOpen: false });
+        else if (s.manualHit) s.patch({ manualHit: null });
         else if (s.recordingOpen) s.patch({ recordingOpen: false });
         else if (s.incidentsOpen) s.patch({ incidentsOpen: false });
         else s.patch({ qrOpen: false, demoOpen: false, alert: null });

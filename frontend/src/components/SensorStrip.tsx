@@ -4,9 +4,30 @@ import { controller } from "../controller";
 import { KIND_LABEL, num, signed } from "../lib/format";
 import { series } from "../lib/live";
 import { useStore } from "../state/store";
-import type { SensorInfo } from "../types";
+import type { LiveStatus, SensorInfo } from "../types";
 
 const SPAN = 1.3; // the gauge shows 1.3 times the tolerance band
+
+function kilohertz(hz: number | null): string {
+  if (!hz) return "";
+  return hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)} kHz` : `${hz} Hz`;
+}
+
+/** Connection of a real sensor: what is live, or in plain words what is wrong. */
+function LiveLine({ live }: { live: LiveStatus }) {
+  const ok = live.state === "streaming";
+  const parts = ok
+    ? ["Live sensor", kilohertz(live.rate_hz), live.host,
+       live.intensity_percent !== null ? `reflectance ${live.intensity_percent} %` : "",
+       live.temperature_c !== null ? `${live.temperature_c} °C` : ""]
+    : [live.message];
+  return (
+    <div className={`readout-live readout-live-${live.state}`} title={live.message}>
+      <i aria-hidden="true" />
+      {parts.filter(Boolean).map((part) => <span key={part}>{part}</span>)}
+    </div>
+  );
+}
 
 function Readout({ sensor, register }: {
   sensor: SensorInfo;
@@ -27,6 +48,7 @@ function Readout({ sensor, register }: {
   const pct = (v: number) => `${((v - min) / width) * 100}%`;
   const state = status?.state ?? "ok";
   const active = status?.active ?? [];
+  const live = status?.live;
 
   return (
     <div className={`readout readout-${state}`}>
@@ -47,9 +69,10 @@ function Readout({ sensor, register }: {
       </div>
       <div className="readout-foot">
         <span>noise {num(status?.noise ?? null, 2)} {sensor.unit}</span>
-        <span>averaging {String(status?.settings?.averaging ?? "–")}</span>
+        {status?.settings?.averaging !== undefined && <span>averaging {String(status.settings.averaging)}</span>}
         {active.length > 0 && <span className="readout-active">{active.map((k) => KIND_LABEL[k]).join(", ")}</span>}
       </div>
+      {live && <LiveLine live={live} />}
       {hint === "improve" && (
         <button className="readout-hint" onClick={() => controller.openAssistant(sensor.id)}>
           Setup can be better. Check it

@@ -8,6 +8,11 @@ __pycache__/
 backend/.env
 .env
 
+# Manuals belong to the manufacturer: keep every file in that folder on your own computer
+backend/data/knowledge/*
+!backend/data/knowledge/README.md
+!backend/data/knowledge/.gitkeep
+
 # Node / build output
 frontend/node_modules/
 frontend/dist/

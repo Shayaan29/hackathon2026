@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from . import incident_tools, ingest
 from .incident_report import render_html
 from .incidents import excerpt_csv, to_row
+from .recommend import Recommender
 from .recording_service import RecordingBusy, RecordingService
 
 
@@ -32,7 +33,7 @@ class IncidentRequest(BaseModel):
 
 
 def add_routes(app: FastAPI, service: RecordingService, require_token: Callable[..., None],
-               team: str, title: str) -> None:
+               team: str, title: str, recommender: Recommender | None = None) -> None:
     engine = service.engine
 
     def find(incident_id: str) -> dict[str, Any]:
@@ -94,9 +95,13 @@ def add_routes(app: FastAPI, service: RecordingService, require_token: Callable[
         return Response(excerpt_csv(find(incident_id)), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{incident_id}.csv"'})
 
+    def prepared(incident: dict[str, Any]) -> dict[str, Any] | None:
+        return recommender.cached(incident) if recommender else None
+
     @app.get("/api/incidents/{incident_id}/report")
     async def incident_report_html(incident_id: str) -> HTMLResponse:
-        return HTMLResponse(render_html(find(incident_id), team=team, title_prefix=title))
+        incident = find(incident_id)
+        return HTMLResponse(render_html(incident, team=team, title_prefix=title, recommendations=prepared(incident)))
 
     @app.get("/report/incident/{incident_id}", include_in_schema=False)
     async def public_incident_report(incident_id: str) -> HTMLResponse:
@@ -104,7 +109,7 @@ def add_routes(app: FastAPI, service: RecordingService, require_token: Callable[
         if incident is None:
             return HTMLResponse(f"<h1>No incident</h1><p>{incident_id} is not in the loaded recording.</p>",
                                 status_code=404)
-        return HTMLResponse(render_html(incident, team=team, title_prefix=title))
+        return HTMLResponse(render_html(incident, team=team, title_prefix=title, recommendations=prepared(incident)))
 
     # -- copilot tools ---------------------------------------------------------
 
@@ -114,4 +119,9 @@ def add_routes(app: FastAPI, service: RecordingService, require_token: Callable[
 
     @app.post("/api/tools/investigate_incident")
     async def tool_investigate_incident(req: IncidentRequest) -> dict[str, Any]:
-        return incident_tools.investigate(engine, req.incident_id)
+        result = incident_tools.investigate(engine, req.incident_id)
+        if recommender is None or not result.get("ok"):
+            return result
+        incident = engine.incidents.get(result["incident"]["id"])
+        recs = await recommender.recommend_within(incident, 10.0) if incident else None
+        return incident_tools.with_recommendations(result, recs)

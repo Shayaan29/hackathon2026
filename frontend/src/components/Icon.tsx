@@ -18,6 +18,7 @@ const PATHS: Record<string, string> = {
   mission: "M12 3v3m0 12v3M3 12h3m12 0h3M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-2a6 6 0 1 1 0 12 6 6 0 0 1 0-12Z",
   play: "M8 5v14l11-7L8 5Z",
   check: "M5 12.5 10 17l9-10",
+  book: "M4 5.5A1.5 1.5 0 0 1 5.5 4H11v15H5.5A1.5 1.5 0 0 0 4 20.5v-15Zm16 0A1.5 1.5 0 0 0 18.5 4H13v15h5.5a1.5 1.5 0 0 1 1.5 1.5v-15Z",
 };
 
 export function Icon({ name, size = 18 }: { name: keyof typeof PATHS | string; size?: number }) {

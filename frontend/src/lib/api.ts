@@ -10,6 +10,9 @@ import type {
   IncidentsResponse,
   InspectResult,
   InsightStep,
+  KnowledgeStatus,
+  ManualDocument,
+  ManualPassage,
   MappingDraft,
   RangeData,
   RecordingJob,
@@ -19,6 +22,7 @@ import type {
   DriftData,
   HistoryData,
   RealtimeSession,
+  RecommendationSet,
   SpectrumData,
   ViewData,
 } from "../types";
@@ -139,7 +143,24 @@ export const api = {
   incidentCsvUrl: (id: string) => `/api/incidents/${encodeURIComponent(id)}/csv`,
   incidentReportUrl: (id: string) => `/report/incident/${encodeURIComponent(id)}`,
 
+  // manuals and the recommendations built from them
+  knowledge: () => request<KnowledgeStatus>("/api/knowledge"),
+  uploadManual: async (file: File) =>
+    request<KnowledgeStatus & { document: ManualDocument }>("/api/knowledge/upload", {
+      method: "POST",
+      body: await file.arrayBuffer(),
+      headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
+    }),
+  deleteManual: (name: string) => request<KnowledgeStatus>(`/api/knowledge/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  searchManual: (query: string) => post<{ hits: ManualPassage[] }>("/api/knowledge/search", { query, k: 5 }),
+  manualUrl: (doc: string, page: number | null) =>
+    `/api/knowledge/file/${encodeURIComponent(doc)}${page ? `#page=${page}` : ""}`,
+  recommendations: (id: string) => request<RecommendationSet>(`/api/incidents/${encodeURIComponent(id)}/recommendations`),
+  recommend: (id: string, force = false) =>
+    post<RecommendationSet>(`/api/incidents/${encodeURIComponent(id)}/recommendations`, { force }),
+
   // the copilot's tools, called from the browser when the AI asks for them
+  searchManualTool: (query: string) => post<Record<string, unknown>>("/api/tools/search_manual", { query }),
   listIncidentsTool: () => post<Record<string, unknown>>("/api/tools/list_incidents"),
   investigateIncident: (incidentId?: string) =>
     post<Record<string, unknown>>("/api/tools/investigate_incident", { incident_id: incidentId ?? null }),

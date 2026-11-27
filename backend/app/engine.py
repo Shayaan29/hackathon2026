@@ -322,6 +322,17 @@ class Engine:
             return "critical"
         return "warning" if active else "ok"
 
+    def _live_status(self, sid: str) -> dict[str, Any] | None:
+        """Connection state of a real sensor (address, rate, what is wrong); None for dummy data."""
+        source = self.sources.get(sid)
+        if source is None:
+            return None
+        try:
+            return source.status() or None
+        except Exception:  # noqa: BLE001 - a status must never break the status message
+            log.exception("%s: could not read the live status", sid)
+            return None
+
     def status_message(self) -> dict[str, Any]:
         sensors: dict[str, Any] = {}
         for cfg in self.settings.sensors:
@@ -338,6 +349,7 @@ class Engine:
                 "state": self.sensor_state(cfg.id),
                 "active": self.detector.active_kinds(cfg.id),
                 "source": self.source_info.get(cfg.id, {}),
+                "live": self._live_status(cfg.id),
                 "read_error": self._read_errors.get(cfg.id),
                 "settings": dict(self.values[cfg.id]),
             }

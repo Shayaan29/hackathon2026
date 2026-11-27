@@ -4,7 +4,6 @@ import { controller } from "../controller";
 import { api, ApiError } from "../lib/api";
 import { COLORS, echarts } from "../lib/charts";
 import { num } from "../lib/format";
-import { confirmSound } from "../lib/sound";
 import { useStore } from "../state/store";
 import type { AssistantPlan } from "../types";
 import { Icon } from "./Icon";
@@ -77,7 +76,6 @@ export function AssistantPanel() {
     try {
       const result = await api.applyAssistant(plan.sensor);
       if (!result.ok) throw new Error(result.error ?? "the sensor refused the change");
-      confirmSound();
       setPhase("verifying");
       // watch the real noise settle on the new settings
       for (let i = 0; i < 7; i++) {

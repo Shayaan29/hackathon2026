@@ -83,9 +83,16 @@ seconds, so say the next line while it runs.
 3. Click **Explain**. "Epsilon explains why the anomaly was flagged, one step at
    a time: the drift rate, the straight-line fit, the time to the limit. Each
    marker appears as it is spoken."
-4. Point at **Checks to carry out**. "The system recommends checks, and it calls
-   them checks to carry out, not a diagnosis."
-5. Click **Open report**. "A complete incident report, from the same numbers.
+4. Point at **Recommended next steps**. "The AI recommends what to check, in order.
+   Under each step you see the measurements it rests on, and the sentence from the
+   sensor manual with its page. Click the page: the manual opens there." Then point
+   at the line below: "Drafts that fail our checks are left out and counted. A number
+   that is not in the data, or a quote that is not in the manual, never reaches you."
+   If the AI is off, the section says so and the fixed checks stay: "Rule based
+   checks" are always there.
+5. Ask by voice: "Epsilon, how do I mount this sensor?" The manual passages appear
+   on screen and Epsilon names the page. (Needs the manuals in `backend/data/knowledge`.)
+6. Click **Open report**. "A complete incident report, from the same numbers.
    Every number on the screen was computed from the file."
 
 Then **Load file**, **Back to the simulator**, and carry on.
@@ -129,9 +136,9 @@ noise drops about five times, measured live.
 ## 11. Close (15 s)
 
 "Everything you saw runs on Micro-Epsilon data: replace one YAML file with the
-real sensors, or plug in MEDAQLib, and the cockpit watches the real line. The
-charts, the explanations and the timeline come from the data, so they work
-the same on day one."
+real sensors, or plug an optoNCDT 5500 into the laptop with an Ethernet cable,
+and the cockpit watches the real line. The charts, the explanations and the
+timeline come from the data, so they work the same on day one."
 
 ## If something fails
 
@@ -141,7 +148,9 @@ the same on day one."
 | Phones cannot join | Use the hotspot of a phone for the laptop, restart cloudflared, show the new code. |
 | Nobody wants to shake | Press **D**, **1** for the same knock. |
 | A chart hides the part | Say "dismiss" or press **Delete**. |
+| The recommendations say "Rule based checks are shown" | The note under the heading says why: no key, no credit, or the model refused. Click **Try the AI again**, or go on: the rule based checks are correct and always shown. |
 | The recording does not load on stage | Press **Escape**, skip section 6, and go on with section 7. Sections 7 onward use the simulator. |
 | The incident spot is missing on the part | The part speed was not typed. Type `8.6` in the sheet, then analyse again. |
 | The scatter has no bright streak | The knock is older than a minute: knock again, then ask. |
 | The 3D view is blank | Gestures and charts still work; the browser needs WebGL (use Chrome or Edge). |
+| The live sensor says "sensor not connected" | Check the cable and that nothing else reads the sensor, then restart the cockpit. If it still does not answer, take the `SENSORS_FILE` line out of `backend\.env` and restart: the cockpit is back on the simulated demo sensors and every section above works. |

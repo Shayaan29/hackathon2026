@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from . import ingest
 from .config import ConfigError, Settings
@@ -45,6 +45,8 @@ class RecordingService:
         self.engine = engine
         self.pending: dict[str, Any] | None = None
         self.job = Job()
+        # called after an analysis finished, for example to prepare recommendations in the background
+        self.after_analysis: Callable[[], None] | None = None
         self._task: asyncio.Task[None] | None = None
         self.playbook: dict[str, list[dict[str, Any]]] = {}
         self.playbook_error: str | None = None
@@ -119,6 +121,11 @@ class RecordingService:
             job.result = {"stats": analysis.stats(), "warnings": recording.warnings + analysis.warnings,
                           "source": source}
             log.info("recording %s: %d incidents", pending["name"], analysis.total)
+            if self.after_analysis is not None:
+                try:
+                    self.after_analysis()
+                except Exception:  # noqa: BLE001 - a helper must not turn a finished analysis into an error
+                    log.exception("after-analysis step failed")
         except IngestError as exc:
             job.state, job.error, job.message = "error", str(exc), "Stopped"
         except Exception as exc:  # noqa: BLE001 - shown to the user, the cockpit keeps running

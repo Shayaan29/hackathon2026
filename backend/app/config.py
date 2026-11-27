@@ -4,6 +4,7 @@ Two files hold everything a team is expected to change:
 
 * ``backend/.env``                 secrets and runtime switches (API key, model, port, token)
 * ``backend/config/sensors.yaml``  sensors, tolerances, dummy settings and alert thresholds
+                                   (``sensors.live.yaml`` is the same for the real optoNCDT 5500)
 
 The rest of the code reads the frozen :class:`Settings` object built here.
 """
@@ -11,6 +12,7 @@ The rest of the code reads the frozen :class:`Settings` object built here.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,7 +26,7 @@ FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
 
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
-SOURCE_TYPES = ("simulator", "replay", "medaqlib")
+SOURCE_TYPES = ("simulator", "replay", "medaqlib", "ild5500")
 EVENT_KINDS = ("vibration", "noise", "drift", "out_of_range", "invalid")
 
 
@@ -45,6 +47,29 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be a whole number, got {raw!r}") from exc
+
+
+_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_env(value: Any, where: str) -> Any:
+    """Replace ${NAME} and ${NAME:-default} in a text value by the entry in .env (or the default).
+
+    This keeps addresses out of the sensor file: the file says ${LIVE_SENSOR_HOST:-169.254.168.150} and the
+    laptop that runs the demo only has to set LIVE_SENSOR_HOST in backend/.env when the address differs."""
+    if not isinstance(value, str) or "${" not in value:
+        return value
+
+    def fill(match: re.Match[str]) -> str:
+        name, default = match.group(1), match.group(2)
+        found = os.getenv(name)
+        if found is not None and found.strip() != "":
+            return found.strip()
+        if default is not None:
+            return default
+        raise ConfigError(f"{where} uses ${{{name}}} but {name} is not set in backend/.env")
+
+    return _VARIABLE.sub(fill, value)
 
 
 @dataclass(frozen=True)
@@ -195,6 +220,12 @@ class Settings:
     engine: EngineConfig
     detection: DetectionConfig
     sensors: tuple[SensorConfig, ...]
+    # manuals and recommendations (all optional; the defaults work without a .env entry)
+    text_model: str = ""
+    embed_model: str = "text-embedding-3-small"
+    knowledge_dir: Path = Path(__file__).resolve().parent.parent / "data" / "knowledge"
+    recommend_prefetch: bool = True
+    openai_base_url: str = "https://api.openai.com/v1"
 
     @property
     def voice_enabled(self) -> bool:
@@ -247,7 +278,8 @@ def _parse_sensor(raw: dict[str, Any], index: int, source_override: str) -> Sens
     )
     if tolerance.low >= tolerance.high:
         raise ConfigError(f"{where}.tolerance.low must be below tolerance.high")
-    source = dict(raw.get("source") or {"type": "simulator"})
+    source = {key: expand_env(value, f"{where}.source.{key}")
+              for key, value in dict(raw.get("source") or {"type": "simulator"}).items()}
     if source_override:
         source["type"] = source_override
     if source.get("type", "simulator") not in SOURCE_TYPES:
@@ -335,4 +367,9 @@ def load_settings(sensors_file: str | Path | None = None) -> Settings:
         engine=_parse_engine(doc.get("engine")),
         detection=_parse_detection(doc.get("detection")),
         sensors=sensors,
+        text_model=_env("OPENAI_TEXT_MODEL"),
+        embed_model=_env("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
+        knowledge_dir=Path(_env("KNOWLEDGE_DIR", str(Path(__file__).resolve().parent.parent / "data" / "knowledge"))),
+        recommend_prefetch=_env("RECOMMEND_PREFETCH", "1").lower() not in ("0", "false", "no", "off"),
+        openai_base_url=_env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
     )

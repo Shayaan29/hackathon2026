@@ -47,7 +47,7 @@ export function TwinView() {
       try {
         const twin = new Twin(host, config.sensors.map((s, i) => ({
           id: s.id, range: Math.max((s.tolerance.high - s.tolerance.low) / 2, 1e-6), nominal: s.nominal,
-          ...trackFor(i, config.sensors.length),
+          model: s.model, ...trackFor(i, config.sensors.length),
         })), {
           forEachSince: (id, tMin, fn) => series(id).forEachSince(tMin, fn),
           now: serverNow,

@@ -3,6 +3,7 @@
 import { controller } from "../controller";
 import { api } from "../lib/api";
 import { SEVERITY_LABEL } from "../lib/format";
+import { recKey } from "../lib/incidents";
 import { useStore } from "../state/store";
 import type { CheckStatus, IncidentDetail } from "../types";
 import { Icon } from "./Icon";
@@ -64,8 +65,99 @@ export function IncidentDock() {
   );
 }
 
+/** "Dominant frequency: 26.0 Hz (one clear peak ...)" becomes "Dominant frequency: 26.0 Hz" for a chip. */
+function factLabel(text: string): string {
+  const cut = text.indexOf(" (");
+  const head = cut > 0 ? text.slice(0, cut) : text;
+  return head.length > 60 ? `${head.slice(0, 57)}…` : head;
+}
+
+/**
+ * What to check next. Every step names the measurements it rests on and, when it comes
+ * from a manual, shows the quote with a link that opens the PDF on that page.
+ */
+function Recommendations({ detail }: { detail: IncidentDetail }) {
+  const state = useStore((s) => s.recs[recKey(detail)]);
+  const aiAvailable = useStore((s) => s.knowledge?.ai ?? false);
+  const again = () => void controller.loadRecommendations(detail, true);
+  if (!state) return null;
+
+  if (state === "loading") {
+    return (
+      <section className="inc-block adv" aria-live="polite">
+        <h4>Recommended next steps</h4>
+        <p className="adv-wait"><span className="adv-pulse" />Reading the manuals and checking every number…</p>
+      </section>
+    );
+  }
+  if (state.status !== "ai" || !state.recommendations?.length) {
+    return (
+      <section className="inc-block adv">
+        <h4>Recommended next steps</h4>
+        <p className="muted">
+          Rule based checks are shown below.{state.note ? ` ${state.note}` : ""}
+        </p>
+        {aiAvailable && <button className="quiet-btn" onClick={again}>Try the AI again</button>}
+      </section>
+    );
+  }
+
+  const facts = new Map((state.facts ?? []).map((f) => [f.id, f.text]));
+  const dropped = state.dropped ?? 0;
+  return (
+    <section className="inc-block adv">
+      <h4>Recommended next steps</h4>
+      <p className="adv-lead muted">
+        Checks to carry out, most important first. Each one shows the measurements behind it. A quote from a manual
+        is kept only if it is word for word in the manual.
+      </p>
+      <ol className="adv-list">
+        {state.recommendations.map((rec) => (
+          <li key={rec.id} className="adv-item">
+            <div className="adv-top">
+              <strong className="adv-action">{rec.action}</strong>
+              <span className={`adv-badge basis-${rec.basis}`}>
+                {rec.basis === "manual" ? "From the manual" : "From the measurements"}
+              </span>
+            </div>
+            <p className="adv-why">{rec.why}</p>
+            {rec.facts.length > 0 && (
+              <p className="adv-facts">
+                <span>Based on</span>
+                {rec.facts.map((id) => {
+                  const text = facts.get(id);
+                  return text ? <span key={id} className="adv-chip" title={text}>{factLabel(text)}</span> : null;
+                })}
+              </p>
+            )}
+            {rec.sources.map((src, i) => (
+              <blockquote key={i} className="adv-quote">
+                <p>“{src.quote}”</p>
+                <footer>
+                  <a href={api.manualUrl(src.doc, src.page)} target="_blank" rel="noreferrer">
+                    {src.doc}{src.page ? `, page ${src.page}` : ""}
+                  </a>
+                </footer>
+              </blockquote>
+            ))}
+          </li>
+        ))}
+      </ol>
+      <p className="adv-foot muted">
+        Drafted by {state.model} from {state.passages} manual passage{state.passages === 1 ? "" : "s"}.{" "}
+        {dropped > 0
+          ? `${dropped} draft${dropped === 1 ? "" : "s"} failed the checks and ${dropped === 1 ? "was" : "were"} left out.`
+          : "Every draft passed the checks."}{" "}
+        <button className="link-btn" onClick={again}>Draft again</button>
+      </p>
+    </section>
+  );
+}
+
 function IncidentView({ detail }: { detail: IncidentDetail }) {
   const loc = detail.location;
+  const rec = useStore((s) => s.recs[recKey(detail)]);
+  const hasAi = Boolean(rec && rec !== "loading" && rec.status === "ai" && rec.recommendations?.length);
 
   const acknowledge = async () => {
     const state = useStore.getState();
@@ -123,9 +215,11 @@ function IncidentView({ detail }: { detail: IncidentDetail }) {
         </ol>
       </section>
 
+      <Recommendations detail={detail} />
+
       {detail.suggestions.length > 0 && (
         <section className="inc-block">
-          <h4>Checks to carry out</h4>
+          <h4>{hasAi ? "Rule based checks" : "Checks to carry out"}</h4>
           <ul className="inc-suggest">
             {detail.suggestions.map((s, i) => (
               <li key={i}>

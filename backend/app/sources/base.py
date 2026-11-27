@@ -41,6 +41,10 @@ class SensorSource(ABC):
         """Optional history to show at start-up. Real sources return None."""
         return None
 
+    def status(self) -> dict[str, Any]:
+        """What the cockpit shows about the connection. Only live sources have something to say."""
+        return {}
+
     def apply_setting(self, name: str, value: Any) -> None:
         """Push a changed setting to the device. The simulator models a few."""
 

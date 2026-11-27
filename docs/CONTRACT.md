@@ -26,8 +26,24 @@ Status once per second:
 {"type": "status", "t": 1764250001.0, "uptime_s": 120, "clients": {"cockpit": 1, "phone": 7},
  "sensors": {"s1": {"latest": 0.42, "mean_1s": 0.1, "noise": 0.8, "noise_ratio": 1.0, "state": "ok",
                     "active": [], "source": {"type": "simulator", "fallback": false, "error": null},
-                    "read_error": null, "settings": {"averaging": 16}}}}
+                    "live": null, "read_error": null, "settings": {"averaging": 16}}}}
 ```
+
+`live` is `null` for simulated data, recordings and files. For a real sensor (source type `ild5500`, the optoNCDT
+5500 over Ethernet) it holds the connection state:
+
+```json
+"live": {"kind": "ild5500", "state": "streaming", "message": "", "host": "169.254.168.150", "port": 1024,
+         "rate_hz": 20000, "article": 4120118, "serial": 12345678, "samples": 181232, "invalid_percent": 0.0,
+         "last_status": null, "reference_mm": 71.2345, "intensity_percent": null, "temperature_c": null}
+```
+
+`state` is `offline` (cannot connect; `message` says why in plain words), `no_data` (connected, nothing arrives),
+`streaming` (valid readings arrive) or `invalid` (readings arrive but most are invalid; `last_status` is the sensor's
+own status text, for example "no peak"). `rate_hz` is the rate measured from the stream, `reference_mm` the distance
+taken as zero, and `intensity_percent` and `temperature_c` are filled when the sensor sends those signals.
+A live sensor never falls back to simulated data: when it is not connected no new samples arrive and
+`live.state` says why. Readings the sensor itself marks as invalid (no target, out of range) arrive as `null`.
 
 Events (also sent to phones). `kind` is one of `vibration`, `noise`, `drift`,
 `out_of_range`, `invalid`; `severity` is `warning` or `critical`.
@@ -176,7 +192,8 @@ history (`"historic": true` on those events); real sources start empty.
 | `explain_chart` | cockpit | none | `{"ok", "steps"}` for the chart in front; the cockpit reveals each marker while the copilot speaks |
 | `show_shift` | cockpit | `sensor`, `event_id` (optional) | `{"ok", "incidents", "overview"}`; with `event_id` it flies to that incident |
 | `list_incidents` | backend | none | `{"ok", "available", "total", "incidents", "recording"}`, see below |
-| `investigate_incident` | backend (cockpit opens the incident) | `incident_id` (optional, default the first) | `{"ok", "speak_rule", "incident"}`, or `{"ok": false, "error"}` |
+| `investigate_incident` | backend (cockpit opens the incident) | `incident_id` (optional, default the first) | `{"ok", "speak_rule", "incident", "recommendations"}`, or `{"ok": false, "error"}` |
+| `search_manual` | backend (cockpit shows the passages) | `query` | `{"ok", "speak_rule", "query", "documents", "passages", "message"}`, see the tool table below. Needs the cockpit token |
 
 ## Added for recordings and incidents
 
@@ -200,6 +217,14 @@ the data around it. Writes need `X-Cockpit-Token`; reads are open.
 | GET | `/report/incident/{id}` | The same report as a page of its own |
 | POST | `/api/tools/list_incidents` | The copilot's tool, see below |
 | POST | `/api/tools/investigate_incident` | The copilot's tool, see below |
+| GET | `/api/incidents/{id}/recommendations` | What was already prepared, a recommendation set (below). `{"status": "none", "ai"}` if nothing yet. Never calls the model. 404 for an unknown id |
+| POST | `/api/incidents/{id}/recommendations` | Token. `{"force": false}`. Drafts, checks and returns the recommendation set. Answers from the cache unless `force` |
+| GET | `/api/knowledge` | The manuals: `documents` (name, kind, pages, passages, bytes), `passages`, `warnings`, `embeddings` (enabled, model, ready, error), `ai`, `model`, `prefetching`, `cached` |
+| POST | `/api/knowledge/upload` | Token. The file as the body, its name in `X-File-Name` (URL encoded). PDF, `.txt` or `.md`. 422 with the reason if it cannot be read |
+| DELETE | `/api/knowledge/{name}` | Token. Removes a manual |
+| GET | `/api/knowledge/file/{name}` | The manual file itself, so a quote can link to `#page=N` |
+| POST | `/api/knowledge/search` | Token. `{"query", "k"}`. `{"hits": [{doc, page, section, text, score, via}]}` |
+| POST | `/api/tools/search_manual` | Token. The copilot's tool |
 
 The sheet sends a mapping of this shape. `part_rpm` 0 means unknown. A tolerance
 has `tolerance_source` `placeholder` until its limits are typed, then `entered`.
@@ -263,6 +288,25 @@ The copilot's tools:
 | --- | --- |
 | `list_incidents` (no arguments) | `{"ok": true, "available": true, "total", "incidents" (up to 12 short rows), "recording"}`. `available` is false when no recording is analysed |
 | `investigate_incident` (`incident_id` optional) | `{"ok": true, "speak_rule", "incident": {id, title, kind, kinds, severity, status, time, sensor, related, summary, numbers, checks, explanation, suggested_checks, location, not_known_from_file, highlight}}`. The `speak_rule` tells the model to speak only numbers that appear in the result, and to call the checks checks to carry out, not a diagnosis |
+| `search_manual` (`query`) | `{"ok": true, "speak_rule", "query", "documents", "passages": [{id, uid, doc, page, section, text, score}], "message"}`. With no manual loaded: `{"ok": true, "documents": 0, "passages": [], "message"}`. With an empty query: `{"ok": false, "error"}`. The cockpit shows the passages as a "From the manuals" card |
+
+A recommendation set, from `/api/incidents/{id}/recommendations`:
+
+```json
+{"status": "ai", "incident": "INC-001", "model": "gpt-5-mini", "note": "", "dropped": 1, "manuals": 2, "passages": 6,
+ "seconds": 8.4, "generated": "13:02:11",
+ "facts": [{"id": "F3", "text": "Dominant frequency: 26.0 Hz (one clear peak, ...)"}],
+ "recommendations": [{"id": "R1", "action": "...", "why": "...", "basis": "manual", "facts": ["F3"],
+                      "sources": [{"doc": "man--optoNCDT.pdf", "page": 12, "section": "", "quote": "..."}]}]}
+```
+
+`status` is `ai` (drafted by the model and checked) or `rules` (the fixed checks of `config/playbook.yaml`,
+with `note` saying why). `basis` is `manual` (at least one verified quote), `data` (measurements only) or `rules`.
+A draft is dropped, and counted in `dropped`, unless it cites a real fact, every number in it appears in the
+measured facts or in its quote, every quote is word for word in the passage it names, and it does not state a cause
+as certain. In the `investigate_incident` result, `recommendations` is `null` (with a `recommendations_note`) when the set is not
+ready after 10 s, otherwise `{"speak_rule", "kind": "ai_checked_against_the_data" | "rule_based", "dropped_drafts",
+"items": [{action, why, based_on: [fact text], sources: [{document, page, quote}]}]}`.
 
 Errors: 422 for a file or a mapping that cannot be read, 409 while an analysis
 runs, 404 for an unknown incident id.
