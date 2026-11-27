@@ -8,6 +8,7 @@ import { IncidentDock } from "./components/IncidentDock";
 import { ManualCard } from "./components/ManualCard";
 import { ManualSheet } from "./components/ManualSheet";
 import { MissionHud } from "./components/MissionHud";
+import { PartCheckPanel } from "./components/PartCheckPanel";
 import { QrOverlay } from "./components/QrOverlay";
 import { RecordingSheet } from "./components/RecordingSheet";
 import { ReportModal } from "./components/ReportModal";
@@ -54,6 +55,7 @@ export default function App() {
       {qrOpen && <QrOverlay />}
       <ReportModal />
       <AssistantPanel />
+      <PartCheckPanel />
       <RecordingSheet />
       <ManualSheet />
       <IncidentDock />

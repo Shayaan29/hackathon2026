@@ -19,7 +19,7 @@ import numpy as np
 from . import assistant, sensor_advice, views
 from .analysis import decimate_minmax, round_or_none
 from .engine import Engine
-from .sensor_specs import MANUAL, reasons_text
+from .sensor_specs import DATASHEET, DS_PAGE, MANUAL, reasons_text
 from .tools import analyze
 
 
@@ -29,7 +29,7 @@ class ReportError(LookupError):
 
 KIND_TITLE = {
     "vibration": "Vibration", "noise": "Increased noise", "drift": "Drift",
-    "out_of_range": "Out of tolerance", "invalid": "Invalid readings",
+    "out_of_range": "Out of tolerance", "invalid": "Invalid readings", "wrong_part": "Different part",
 }
 
 
@@ -83,6 +83,15 @@ def _causes_and_actions(event: dict[str, Any], unit: str, related: list[str]) ->
         actions = ["Check the part with a reference gauge.",
                    "Hold back parts measured since this alert until the cause is clear.",
                    "Check the sensor mounting for displacement."]
+    elif kind == "wrong_part":
+        causes = ["A part of another height or shape lies under the sensor than the one that was taught.",
+                  "The part is not seated flat: tilted, lifted by dirt or chips, or resting on a burr.",
+                  "The sensor or the fixture moved, so even the right part now reads somewhere else.",
+                  "The taught part was not typical, for example the first part had a deviation."]
+        actions = ["Compare the part with a known good one and measure its height with a reference gauge.",
+                   "Hold back the parts measured since this alert until the cause is clear.",
+                   "If the right part reads differently now, check the sensor mounting and teach the part again.",
+                   "Teach a second or third good part so the accepted band follows the real spread of the parts."]
     else:  # invalid
         causes = ["Target outside the measuring range, or tilted too far.",
                   "Surface too shiny or too dark for the current exposure.",
@@ -159,10 +168,11 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
     datasheet = None
     if cfg.spec is not None:
         rate = (live or {}).get("rate_hz")
-        datasheet = {"title": cfg.spec.title, "manual": MANUAL,
+        datasheet = {"title": cfg.spec.title, "manual": MANUAL, "datasheet": DATASHEET,
                      "rows": cfg.spec.datasheet_rows(rate / 1000.0 if rate else None)}
     ticket_sensor = ([f"Sensor: {cfg.spec.title}, measuring range {cfg.spec.range_text}, linearity "
-                      f"< ±{cfg.spec.linearity_um:g} µm ({MANUAL}, p. 12)"] if cfg.spec is not None else [])
+                      f"< ±{cfg.spec.linearity_um:g} µm ({DATASHEET}, p. {DS_PAGE['linearity']})"]
+                     if cfg.spec is not None else [])
     ticket = "\n".join([
         f"Title: {title}",
         f"Priority: {PRIORITY.get(event['severity'], event['severity'])}",
@@ -357,10 +367,14 @@ FACT_LABELS = {
     "range": ("Measuring range of the sensor", "{v}"),
     "extended_range": ("Extended measuring range", "{v}"),
     "led": ("State LED of the sensor", "{v}"),
+    "parts": ("Good parts taught", "{v}"),
 }
 # values that are positions: shown in the sensor's own unit (millimetres for the optoNCDT)
 POSITION_FACTS = {"value": "Reading", "limit": "Limit crossed", "current": "Reading now",
-                  "tolerance_low": "Lower limit", "tolerance_high": "Upper limit"}
+                  "tolerance_low": "Lower limit", "tolerance_high": "Upper limit",
+                  "reference": "Taught part reads", "half_width": "Allowed deviation (±)",
+                  "deviation": "Difference to the taught part", "height": "Height of this part",
+                  "reference_height": "Height of the taught part"}
 ZONE_TEXT = {"standard": "inside the measuring range", "before": "before the start of the range (extended range)",
              "after": "beyond the end of the range (extended range)", "outside": "outside the extended range"}
 
@@ -384,9 +398,11 @@ def _datasheet_html(sheet: dict[str, Any] | None) -> str:
     if not sheet:
         return ""
     rows = "".join(f"<tr><td>{_esc(r['label'])}</td><td>{_esc(r['value'])}</td>"
-                   f"<td class='pg'>p. {r['page']}</td></tr>" for r in sheet["rows"])
+                   f"<td class='pg'>{'data sheet' if r.get('source') == sheet.get('datasheet') else 'manual'} "
+                   f"p. {r['page']}</td></tr>" for r in sheet["rows"])
     return (f"<section><h2>Sensor data sheet: {_esc(sheet['title'])}</h2><table class='sheet'>{rows}</table>"
-            f"<p class='cap'>From the {_esc(sheet['manual'])}. Page numbers are the printed ones.</p></section>")
+            f"<p class='cap'>From the {_esc(sheet.get('datasheet', ''))} and the {_esc(sheet['manual'])}. "
+            "Page numbers are the printed ones. Where the two differ, the newer data sheet is used.</p></section>")
 
 
 def render_html(report: dict[str, Any], embed: bool = False) -> str:

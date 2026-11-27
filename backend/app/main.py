@@ -23,6 +23,7 @@ from .hub import COCKPIT, PHONE, Hub
 from .knowledge import KnowledgeBase
 from .knowledge_api import add_routes as add_knowledge_routes
 from .openai_client import OpenAIClient
+from .partcheck import PartCheckError
 from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
 from .recommend import Recommender
 from .recording_api import add_routes as add_recording_routes
@@ -46,6 +47,20 @@ class SettingRequest(BaseModel):
     name: str
     value: Any
     confirmed: bool = False
+
+
+class PartLearnRequest(BaseModel):
+    kind: str = "part"                      # part (a good part) or empty (nothing under the sensor)
+    add: bool = False                       # true: one more good part, the band grows to cover it
+    margin_um: float | None = None          # allowed deviation around the taught parts, in µm
+
+
+class PartMarginRequest(BaseModel):
+    margin_um: float
+
+
+class PartForgetRequest(BaseModel):
+    what: str = "all"                       # all, part or empty
 
 
 class ReportRequest(BaseModel):
@@ -247,6 +262,31 @@ def create_app(settings: Settings | None = None,
             return assistant.apply(engine, sensor)
         except EngineError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # -- REST: part check (teach one part, flag every other) ---------------------
+
+    @app.get("/api/part/{sensor}")
+    def part_state(sensor: str) -> dict[str, Any]:
+        return engine.partcheck.public(sensor_or_400(sensor))
+
+    @app.post("/api/part/{sensor}/learn", dependencies=[Depends(require_token)])
+    def part_learn(sensor: str, req: PartLearnRequest) -> dict[str, Any]:
+        sid = sensor_or_400(sensor)
+        try:
+            return engine.partcheck.learn(sid, engine.buffers[sid], req.kind, req.add, req.margin_um)
+        except PartCheckError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/part/{sensor}/margin", dependencies=[Depends(require_token)])
+    def part_margin(sensor: str, req: PartMarginRequest) -> dict[str, Any]:
+        try:
+            return engine.partcheck.set_margin(sensor_or_400(sensor), req.margin_um)
+        except PartCheckError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/part/{sensor}/forget", dependencies=[Depends(require_token)])
+    def part_forget(sensor: str, req: PartForgetRequest) -> dict[str, Any]:
+        return engine.partcheck.forget(sensor_or_400(sensor), req.what)
 
     @app.get("/api/reports/{event_id}")
     def report_json(event_id: str) -> dict[str, Any]:

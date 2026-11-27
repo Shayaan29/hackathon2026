@@ -170,6 +170,13 @@ button { cursor: pointer; }
 .readout-live-offline i, .readout-live-no_data i, .readout-live-invalid i { background: var(--amber); }
 .readout-active { color: var(--amber-text); font-weight: 600; }
 .readout-critical .readout-active { color: var(--nogo); }
+.readout-part {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--hair-strong); background: var(--card); color: var(--steel); font-size: 13px; font-weight: 600;
+}
+.readout-part:hover { background: var(--sunk); }
+.readout-part.part-match { border-color: var(--go); color: var(--go); }
+.readout-part.part-different { border-color: var(--nogo); background: var(--nogo); color: #fff; animation: edge-red 0.9s ease-in-out 3; }
 .readout-hint {
   margin-top: 8px; padding: 5px 10px; border-radius: 8px; border: 1px solid rgba(90, 63, 242, 0.35);
   background: var(--laser-soft); color: var(--laser-deep); font-size: 13px; font-weight: 600;
@@ -321,6 +328,14 @@ button { cursor: pointer; }
 .assist-verdict { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 16px; font-weight: 500; }
 .assist-verdict.is-good, .assist-verdict svg { color: var(--go); }
 .assist-chart { height: 230px; }
+.assist-big.part-match { color: var(--go); }
+.assist-big.part-different { color: var(--nogo); }
+.assist-verdict.part-different, .assist-verdict.part-different svg { color: var(--nogo); }
+.part-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 16px; }
+.part-actions .solid-btn:disabled, .part-actions .btn:disabled { opacity: 0.55; }
+.part-margin { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--steel); }
+.part-margin input { width: 92px; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--card); font: 600 16px var(--cond); font-variant-numeric: tabular-nums; }
+.part-error { padding: 12px 0 0; }
 .assist-note { margin: 4px 0 14px; font-size: 13px; color: var(--steel); }
 .assist-actions { display: flex; justify-content: flex-end; gap: 10px; }
 

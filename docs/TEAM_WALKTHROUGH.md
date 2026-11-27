@@ -387,6 +387,11 @@ Fill this in for yourself. Write "yes", or describe what you saw.
 
 ## Part 9: Known limits (say these out loud)
 
+- The part check tells parts apart by the height of their top surface only. Two different parts of the same height
+  look identical to the sensor. Its band (starting value ±0.10 mm) is our choice, not a data sheet value.
+- The ILD5500-10**DR** variant is a different sensor (other working range, 22.5° mounting). The catalogue does not
+  contain it, so it has no data sheet in the cockpit. Check the label on the sensor.
+
 - The demo recording is simulated. The report and its banner say so. Real files
   do not carry that label.
 - The analysis works at 500 Hz. The file is reduced to that rate first, so

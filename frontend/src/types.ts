@@ -1,7 +1,7 @@
 // Message and data shapes shared with the backend (see docs/CONTRACT.md).
 
 export type Severity = "info" | "warning" | "critical";
-export type EventKind = "vibration" | "noise" | "drift" | "out_of_range" | "invalid";
+export type EventKind = "vibration" | "noise" | "drift" | "out_of_range" | "invalid" | "wrong_part";
 export type SensorState = "ok" | "warning" | "critical";
 export type ChartView = "timeseries" | "compare" | "spectrum" | "drift" | ExploreChart | "shift" | "incident";
 export type ExploreChart = "histogram" | "boxplot" | "scatter" | "bar";
@@ -115,6 +115,25 @@ export interface LiveStatus {
   temperature_c: number | null;
 }
 
+/** The part check: one taught part, everything else is flagged. Positions are in the signal unit (µm). */
+export interface PartState {
+  supported: boolean;
+  /** no_reference: nothing taught. match: the taught part. different: another part. empty: the taught empty plate. */
+  state: "no_reference" | "waiting" | "match" | "different" | "empty";
+  /** the last 0.4 s were steady enough to tell what lies under the sensor */
+  steady: boolean;
+  position_um: number | null;
+  message: string;
+  reference: {
+    center_um: number; half_width_um: number; margin_um: number; parts: number;
+    low_um: number; high_um: number; taught_at: number;
+  } | null;
+  empty_um: number | null;
+  /** height of the taught part above the taught empty plate */
+  height_um: number | null;
+  alerts: number;
+}
+
 export interface SensorStatus {
   latest: number | null;
   mean_1s: number | null;
@@ -124,6 +143,7 @@ export interface SensorStatus {
   active: EventKind[];
   source: { type: string; fallback: boolean; error: string | null };
   live?: LiveStatus | null;
+  part?: PartState;
   read_error: string | null;
   settings: Record<string, string | number>;
 }

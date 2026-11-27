@@ -11,12 +11,19 @@ from __future__ import annotations
 from typing import Any
 
 from .config import SensorConfig
-from .sensor_specs import PAGE, WARMUP_MIN, SensorSpec, main_reason, reasons_text
+from .sensor_specs import DS_PAGE, PAGE, WARMUP_MIN, SensorSpec, main_reason, reasons_text
+
+
+def _pages(label: str, pages: list[int]) -> str:
+    return f"{label} p. {pages[0]}" if len(pages) == 1 else f"{label} pp. {', '.join(str(p) for p in pages)}"
 
 
 def cite(*keys: str) -> str:
-    pages = sorted({PAGE[key] for key in keys})
-    return f"(manual p. {pages[0]})" if len(pages) == 1 else f"(manual pp. {', '.join(str(p) for p in pages)})"
+    """Where a statement comes from: the data sheet for the technical data table, the manual for the rest."""
+    sheet = sorted({DS_PAGE[key] for key in keys if key in DS_PAGE})
+    manual = sorted({PAGE[key] for key in keys if key not in DS_PAGE})
+    parts = ([_pages("data sheet", sheet)] if sheet else []) + ([_pages("manual", manual)] if manual else [])
+    return f"({'; '.join(parts)})"
 
 
 def _number(value: Any) -> float | None:

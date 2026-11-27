@@ -13,6 +13,8 @@ hotel, or to see what the cockpit does when something goes wrong.
     python scripts/fake_ild5500.py --scenario extended     # the target moves out of the measuring range, but
                                                            # stays inside the extended range (the LED would flash)
     python scripts/fake_ild5500.py --scenario out-of-range # the sensor reports "target beyond the range"
+    python scripts/fake_ild5500.py --scenario parts --after 40   # part check: a good part (3.0 mm) lies under the
+                                                           # sensor; from second 40 other things come and go
 
 Distances are what DIST1 is: millimetres counted from the start of the measuring range (0 to 10 for an
 ILD5500-10, the middle is 5), so the cockpit shows the same numbers as the sensor's web page.
@@ -39,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.sources.ild5500 import HEADER, PREAMBLE, SIGNAL_ORDER  # noqa: E402
 
-SCENARIOS = ("quiet", "vibration", "drift", "extended", "no-target", "out-of-range")
+SCENARIOS = ("quiet", "vibration", "drift", "extended", "parts", "no-target", "out-of-range")
 NO_PEAK = 0x7FFFFF04
 AFTER_RANGE = 0x7FFFFF06
 
@@ -56,6 +58,13 @@ def distance_mm(t: np.ndarray, scenario: str, mid_mm: float, noise_um: float, rn
         mm += np.clip(t - after, 0.0, None) * (6.0 / 60.0) / 1000.0     # 6 µm per minute
     elif scenario == "extended":
         mm += np.clip((t - after) / 3.0, 0.0, 1.0) * 6.5                # 3 s to 6.5 mm further away: 11.5 mm
+    elif scenario == "parts":
+        # the good part (3.0 mm), then a foreign part at 4.2 mm, the good part again, the empty plate at 9.0 mm,
+        # a foreign part at 2.1 mm and the good part; every change is a 0.4 s slide
+        marks = [0, after, after + 0.4, after + 6, after + 6.4, after + 12, after + 12.4, after + 18, after + 18.4,
+                 after + 24, after + 24.4]
+        levels = [3.0, 3.0, 4.2, 4.2, 3.0, 3.0, 9.0, 9.0, 2.1, 2.1, 3.0]
+        mm = np.interp(t, marks, levels) + (mm - mid_mm)
     return mm
 
 
