@@ -21,6 +21,7 @@ from typing import Any
 
 import numpy as np
 
+from . import sensor_advice, sensor_specs
 from .analysis import decimate_minmax, robust_sigma, round_or_none
 from .engine import Engine, EngineError
 
@@ -67,6 +68,88 @@ def _moving_average(values: np.ndarray, m: int) -> np.ndarray:
     return out
 
 
+def _datasheet_check(engine: Engine, sid: str, now: float) -> dict[str, Any]:
+    """Setup check of a sensor with a data sheet whose settings live in its own web page.
+
+    The cockpit cannot change those settings, so nothing is proposed. It compares what it measures with what the
+    manufacturer states and says where to look in the sensor's web page."""
+    cfg = engine.settings.sensor(sid)
+    spec = cfg.spec
+    assert spec is not None
+    unit = cfg.unit
+    _, _, recent = engine.buffers[sid].fast_window(3.0)
+    noise = robust_sigma(recent)
+    baseline = engine.detector.baseline(sid)
+    invalid_share = float(np.mean(~np.isfinite(recent))) if recent.size else 0.0
+    finite = recent[np.isfinite(recent)]
+    linearity = spec.linearity_um
+    reasons: list[str] = []
+    found: list[str] = []          # what is wrong, in a few words each, for the summary line
+
+    if invalid_share > 0.01:
+        live = engine._live_status(sid) or {}
+        invalid = live.get("invalid_reasons")
+        main = sensor_specs.main_reason(invalid)
+        why = f": {sensor_specs.reasons_text(invalid)}" if invalid else ""
+        reasons.append(f"{invalid_share * 100:.0f}% of the readings in the last seconds are invalid{why}. "
+                       f"{sensor_specs.invalid_hint(main, spec)}")
+        found.append(f"{invalid_share * 100:.0f}% of the readings are invalid")
+    if finite.size:
+        where = float(np.median(finite))
+        zone = spec.zone(where)
+        if zone.name != "standard":
+            reasons.append(f"The target is {zone.text}: it reads {cfg.pos(where)}. Linearity "
+                           f"and repeatability of the data sheet apply inside {spec.range_text} "
+                           f"{sensor_advice.cite('linearity')}.")
+            found.append({"before": "the target is closer than the measuring range",
+                          "after": "the target is beyond the measuring range",
+                          "outside": "the target is outside even the extended measuring range"}[zone.name])
+    if noise is not None and noise > linearity:
+        reasons.append(f"Noise is {noise:.2f} {unit}, {noise / linearity:.1f} times the data sheet linearity of "
+                       f"±{linearity:g} {unit}. The linearity is given with median 9 + moving average 4096 "
+                       f"{sensor_advice.cite('linearity')}; the quick setting static is median 9 + moving average "
+                       f"128, balanced is 64 {sensor_advice.cite('presets')}.")
+        reasons.append("Averaging N values lowers random noise by about the square root of N, and slows the sensor "
+                       "down. Choose it in the sensor's web page under Home > Signal quality; a moving average "
+                       f"can go up to 4096 {sensor_advice.cite('averaging')}. The cockpit cannot change the "
+                       "sensor's settings.")
+        found.append(f"noise {noise:.2f} {unit} against a data sheet linearity of ±{linearity:g} {unit}")
+
+    if noise is None:
+        summary, status = f"{cfg.name}: not enough data yet.", "ok"
+    elif reasons:
+        summary, status = f"{cfg.name} ({spec.model}): {'; '.join(found)}. See what to check below.", "advice"
+    else:
+        summary, status = (f"{cfg.name} ({spec.model}) looks fine: noise {noise:.2f} {unit} is within the data sheet "
+                           f"linearity of ±{linearity:g} {unit}, and the target is inside the measuring range."), "ok"
+
+    t, _, window = engine.buffers[sid].fast_window(PREVIEW_S)
+    view, _ = decimate_minmax(window.astype(float), 500)
+    return {
+        "sensor": sid, "name": cfg.name, "unit": unit, "status": status, "summary": summary,
+        "basis": f"Data sheet linearity (±{linearity:g} {unit})",
+        "current": {},
+        "measured": {
+            "noise": round_or_none(noise, 3),
+            "normal_noise": round_or_none(baseline, 3),
+            "noise_limit": round(linearity, 3),
+            "noise_target": round(linearity / 3.0, 3),
+            "invalid_share": round(invalid_share, 4),
+            "watch_frequency_hz": None,
+            "bandwidth_hz": None,
+        },
+        "proposal": [],
+        "reasons": reasons,
+        "expected": {"noise": None, "bandwidth_hz": None},
+        "preview": {
+            "window_s": PREVIEW_S,
+            "before": [round_or_none(float(v), 3) for v in view],
+            "after": [round_or_none(float(v), 3) for v in view],
+        },
+        "t": now,
+    }
+
+
 def suggest(engine: Engine, sensor: str) -> dict[str, Any]:
     """Measure the signal and propose settings. Nothing is changed here."""
     sid = engine.resolve_sensor(sensor)
@@ -74,6 +157,8 @@ def suggest(engine: Engine, sensor: str) -> dict[str, Any]:
     values = engine.values[sid]
     now = time.time()
     unit = cfg.unit
+    if cfg.spec is not None and not cfg.settings:
+        return _datasheet_check(engine, sid, now)
 
     _, _, recent = engine.buffers[sid].fast_window(3.0)
     noise = robust_sigma(recent)

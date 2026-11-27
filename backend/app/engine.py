@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 
+from . import sensor_specs
 from .analysis import decimate_minmax, robust_sigma, round_or_none, to_json_list
 from .buffer import SensorBuffer
 from .config import Settings
@@ -307,7 +308,23 @@ class Engine:
                and (sensor is None or e.sensor == sensor or sensor in e.related_sensors)]
         return [{**e.to_message(), "historic": e.id.startswith("H")} for e in out]
 
+    def _enrich(self, event: Event) -> None:
+        """Add what only the live source knows to an alert: why the readings were invalid."""
+        if event.kind != "invalid":
+            return
+        reasons = (self._live_status(event.sensor) or {}).get("invalid_reasons")
+        if not reasons:
+            return
+        cfg = self.settings.sensor(event.sensor)
+        main = sensor_specs.main_reason(reasons)
+        event.numbers["reasons"] = reasons
+        event.numbers["main_reason"] = main
+        event.summary = (f"{cfg.name} reports invalid readings: {event.numbers.get('invalid_percent')}% of the last "
+                         f"second, {sensor_specs.reasons_text(reasons)}. "
+                         f"{sensor_specs.invalid_hint(main, cfg.spec)}")
+
     def publish_event(self, event: Event) -> None:
+        self._enrich(event)
         self._snapshot_due.append((event.t + SNAPSHOT_AFTER_S + 0.3, event))
         self.events.append(event)
         log.info("event %s %s: %s", event.kind, event.sensor, event.summary)

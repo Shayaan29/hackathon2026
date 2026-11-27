@@ -197,17 +197,26 @@ the cockpit.
    readings, and says in plain words what to fix if something is wrong.
 8. In `backend\.env` set `SENSORS_FILE=config/sensors.live.yaml`. Only if the address or port differ from the
    defaults, also set `LIVE_SENSOR_HOST=` and `LIVE_SENSOR_PORT=`. Then restart the cockpit.
-9. The top bar says "Sensor in tolerance (live data)" and the sensor tile says "Live sensor 20 kHz" with the address.
+9. The top bar says "Target in measuring range (live data)" and the sensor tile says "Live sensor 20 kHz" with the address.
 
 In `config/sensors.live.yaml` replace the sensor name and model with the type on the sensor's label
-(ILD5500-10, -25, -50, -100 or -200), and set the tolerance in µm. `range_mm` is only used when
-`reference_mm` is `mid`. The digital twin shows a 3D model of the sensor whenever the model name contains
-ILD5500 or optoNCDT 5500. The housing is the same for all five measuring ranges; the type plate shows which one it is.
+(ILD5500-10, -25, -50, -100 or -200). The model decides the rest: with `tolerance: measuring_range` the limits are
+the measuring range of that model from the operating instructions (0 to 10 mm for an ILD5500-10, extended range
+−2.5 to 12.5 mm), so no limit has to be typed in. To judge a part instead, give `tolerance` a band in µm from the
+start of the measuring range, for example `{ low: 4950.0, high: 5050.0 }`. The digital twin shows a 3D model of the
+sensor whenever the model name contains ILD5500 or optoNCDT 5500. The housing is the same for all five measuring
+ranges; the type plate shows which one it is.
 
 How it behaves:
 
-- The reading is the distance to the part. The first second of valid readings sets the zero (the median), so the chart
-  shows the deviation in µm. Set `reference_mm` to a number to use a fixed zero instead.
+- The reading is the distance DIST1 as the sensor reports it: millimetres from the start of the measuring range
+  (0 mm = start, 10 mm = end for an ILD5500-10; operating instructions p. 62 and p. 66). Screens, alerts, reports and
+  the copilot speak in mm. Inside, the cockpit keeps µm, so noise and vibration of a few µm stay visible.
+  If you master or zero the sensor in its web page, the numbers shift by that offset. `reference_mm: auto` shows only
+  the change since the start instead, and a number sets a fixed zero.
+- The limits are the data sheet of the model: a target between 0 and 10 mm is in range, between −2.5 and 0 mm or
+  10 and 12.5 mm it is still measured but in the extended range (like the flashing green LED), and beyond that it is
+  outside, like the red LED. Every explanation, alert and report names the page of the manual it comes from.
 - The sensor measures up to 150 kHz. The cockpit averages that down to 500 values per second, in time with the
   clock, so the alert rules behave as they do on the simulator.
 - If the cable is pulled or the sensor is off, the tile and the top bar say "sensor not connected". The cockpit keeps
@@ -215,11 +224,15 @@ How it behaves:
 - "Connected, but most readings are invalid" means the sensor sees no target, the part is outside the measuring
   range, or the surface is too dark or too shiny. The tile shows the sensor's own status text.
 - The live file has no `settings`, so the setup assistant and the copilot do not push values into the sensor.
-  Averaging and measuring rate are changed in the sensor's web page. The demo injection buttons only work with the
-  simulator.
+  The setup check compares the measured noise with the linearity of the data sheet (±1.5 µm), looks at the share of
+  invalid readings and at where the target is, and says what to check, with the manual page. Averaging and measuring
+  rate are changed in the sensor's web page. The demo injection buttons only work with the simulator.
+- Cp and Cpk are not shown for a measuring range, because they describe a part tolerance. They appear again when
+  `tolerance` is a band in µm.
 - No sensor at hand: `python scripts/fake_ild5500.py --scenario vibration` in `backend/` plays a sensor on
   `127.0.0.1:1024` whose target starts to shake after 10 seconds. The other scenarios are `quiet`, `drift`,
-  `no-target` and `out-of-range`; `--help` lists the options. Set `LIVE_SENSOR_HOST=127.0.0.1` in `.env` to try the
+  `extended` (the target leaves the 0 to 10 mm range and stays in the extended range), `no-target` and
+  `out-of-range`; `--help` lists the options. The fake sensor serves one client at a time. Set `LIVE_SENSOR_HOST=127.0.0.1` in `.env` to try the
   whole chain.
 
 `SOURCE_OVERRIDE=simulator` in `.env` forces dummy data for every sensor:

@@ -4,9 +4,27 @@ import { controller } from "../controller";
 import { KIND_LABEL, num, signed } from "../lib/format";
 import { series } from "../lib/live";
 import { useStore } from "../state/store";
+import { pos, shownFor, zoneOf, ZONE_WORDS, type Shown } from "../lib/units";
 import type { LiveStatus, SensorInfo } from "../types";
 
 const SPAN = 1.3; // the gauge shows 1.3 times the tolerance band
+
+/** The gauge covers the extended measuring range of a sensor with a data sheet, otherwise 1.3 times the tolerance. */
+function gaugeAxis(sensor: SensorInfo): { min: number; width: number } {
+  const z = sensor.spec?.zones_um;
+  if (z && sensor.tolerance_kind === "measuring_range") return { min: z.ext_low, width: z.ext_high - z.ext_low };
+  const { low, high } = sensor.tolerance;
+  const width = (high - low) * SPAN;
+  return { min: (low + high) / 2 - width / 2, width };
+}
+
+/** A tick label on the gauge: the limit in the shown unit, without the unit. */
+function tick(v: number, shown: Shown, edge: "low" | "high"): string {
+  if (shown.display) return String(Number((v * shown.display.scale).toFixed(2))).replace("-", "−");
+  return edge === "low" ? num(v, 0) : signed(v, 0);
+}
+
+interface Els { value: HTMLElement | null; needle: HTMLElement | null; zone: HTMLElement | null }
 
 function kilohertz(hz: number | null): string {
   if (!hz) return "";
@@ -18,6 +36,7 @@ function LiveLine({ live }: { live: LiveStatus }) {
   const ok = live.state === "streaming";
   const parts = ok
     ? ["Live sensor", kilohertz(live.rate_hz), live.host,
+       live.reference && live.reference !== "range_start" ? `zero: ${live.reference}` : "",
        live.intensity_percent !== null ? `reflectance ${live.intensity_percent} %` : "",
        live.temperature_c !== null ? `${live.temperature_c} °C` : ""]
     : [live.message];
@@ -31,21 +50,23 @@ function LiveLine({ live }: { live: LiveStatus }) {
 
 function Readout({ sensor, register }: {
   sensor: SensorInfo;
-  register: (id: string, value: HTMLElement | null, needle: HTMLElement | null) => void;
+  register: (id: string, els: Els | null) => void;
 }) {
   const status = useStore((s) => s.status?.sensors[sensor.id]);
   const hint = useStore((s) => s.hints[sensor.id]);
   const valueRef = useRef<HTMLSpanElement>(null);
   const needleRef = useRef<HTMLSpanElement>(null);
+  const zoneRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    register(sensor.id, valueRef.current, needleRef.current);
-    return () => register(sensor.id, null, null);
+    register(sensor.id, { value: valueRef.current, needle: needleRef.current, zone: zoneRef.current });
+    return () => register(sensor.id, null);
   }, [sensor.id, register]);
 
+  const shown = shownFor(sensor);
   const { low, high } = sensor.tolerance;
-  const width = (high - low) * SPAN;
-  const min = (low + high) / 2 - width / 2;
+  const { min, width } = gaugeAxis(sensor);
   const pct = (v: number) => `${((v - min) / width) * 100}%`;
+  const ext = sensor.tolerance_kind === "measuring_range" ? sensor.spec?.zones_um : undefined;
   const state = status?.state ?? "ok";
   const active = status?.active ?? [];
   const live = status?.live;
@@ -58,16 +79,21 @@ function Readout({ sensor, register }: {
       </div>
       <div className="readout-value">
         <span ref={valueRef}>…</span>
-        <small>{sensor.unit}</small>
+        <small>{shown.unit}</small>
       </div>
-      <div className="gauge" aria-hidden="true">
+      <div className={`gauge ${ext ? "gauge-range" : ""}`} aria-hidden="true">
+        {ext && <span className="gauge-ext" style={{ left: 0, width: pct(low) }} />}
+        {ext && <span className="gauge-ext" style={{ left: pct(high), right: 0 }} />}
         <span className="gauge-go" style={{ left: pct(low), width: `${((high - low) / width) * 100}%` }} />
-        <span className="gauge-tick" style={{ left: pct(low) }}><i>{num(low, 0)}</i></span>
+        <span className="gauge-tick" style={{ left: pct(low) }}><i>{tick(low, shown, "low")}</i></span>
         <span className="gauge-tick gauge-mid" style={{ left: pct((low + high) / 2) }} />
-        <span className="gauge-tick" style={{ left: pct(high) }}><i>{signed(high, 0)}</i></span>
+        <span className="gauge-tick" style={{ left: pct(high) }}><i>{tick(high, shown, "high")}</i></span>
+        {ext && <span className="gauge-tick gauge-edge" style={{ left: "0%" }}><i>{tick(ext.ext_low, shown, "low")}</i></span>}
+        {ext && <span className="gauge-tick gauge-edge" style={{ left: "100%" }}><i>{tick(ext.ext_high, shown, "high")}</i></span>}
         <span className="gauge-needle" ref={needleRef} />
       </div>
       <div className="readout-foot">
+        {ext && <span className="readout-zone" ref={zoneRef} data-zone="standard">{ZONE_WORDS.standard}</span>}
         <span>noise {num(status?.noise ?? null, 2)} {sensor.unit}</span>
         {status?.settings?.averaging !== undefined && <span>averaging {String(status.settings.averaging)}</span>}
         {active.length > 0 && <span className="readout-active">{active.map((k) => KIND_LABEL[k]).join(", ")}</span>}
@@ -78,13 +104,18 @@ function Readout({ sensor, register }: {
           Setup can be better. Check it
         </button>
       )}
+      {hint === "advice" && (
+        <button className="readout-hint" onClick={() => controller.openAssistant(sensor.id)}>
+          The setup check has advice
+        </button>
+      )}
     </div>
   );
 }
 
 export function SensorStrip() {
   const config = useStore((s) => s.config);
-  const refs = useRef(new Map<string, { value: HTMLElement | null; needle: HTMLElement | null }>());
+  const refs = useRef(new Map<string, Els>());
 
   useEffect(() => {
     let raf = 0;
@@ -96,11 +127,14 @@ export function SensorStrip() {
           const r = refs.current.get(sensor.id);
           const latest = series(sensor.id).latest();
           const v = latest && Number.isFinite(latest.v) ? latest.v : null;
-          if (r?.value) r.value.textContent = v === null ? "no reading" : signed(v, 2);
+          if (r?.value) r.value.textContent = v === null ? "no reading" : pos(v, shownFor(sensor), 2);
+          if (r?.zone) {
+            const zone = zoneOf(v, sensor);
+            r.zone.textContent = zone ? ZONE_WORDS[zone] : "no reading";
+            r.zone.dataset.zone = zone ?? "none";
+          }
           if (r?.needle) {
-            const { low, high } = sensor.tolerance;
-            const width = (high - low) * SPAN;
-            const min = (low + high) / 2 - width / 2;
+            const { min, width } = gaugeAxis(sensor);
             const p = v === null ? 50 : Math.min(Math.max(((v - min) / width) * 100, 0), 100);
             r.needle.style.left = `${p}%`;
             r.needle.style.opacity = v === null ? "0.25" : "1";
@@ -113,8 +147,8 @@ export function SensorStrip() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const register = useRef((id: string, value: HTMLElement | null, needle: HTMLElement | null) => {
-    if (value || needle) refs.current.set(id, { value, needle });
+  const register = useRef((id: string, els: Els | null) => {
+    if (els) refs.current.set(id, els);
     else refs.current.delete(id);
   }).current;
 

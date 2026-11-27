@@ -408,9 +408,16 @@ def test_bad_options_are_named() -> None:
 
 
 def test_the_middle_of_the_measuring_range_is_a_choice() -> None:
-    assert Ild5500Source(ild_config(1, reference_mm="mid", range_mm=50), 500).ref_mm == 70.0
-    assert Ild5500Source(ild_config(1, reference_mm="mid", range_mm=10), 500).ref_mm == 35.0
-    assert Ild5500Source(ild_config(1, reference_mm="mid", range_mm=200), 500).ref_mm == 200.0
+    # DIST1 counts from the start of the measuring range, so the middle is half the range
+    assert Ild5500Source(ild_config(1, reference_mm="mid", range_mm=50), 500).ref_mm == 25.0
+    assert Ild5500Source(ild_config(1, reference_mm="mid", range_mm=10), 500).ref_mm == 5.0
+    assert Ild5500Source(ild_config(1, reference_mm="mid", range_mm=200), 500).ref_mm == 100.0
+
+
+def test_range_start_is_the_origin_of_the_sensor_itself() -> None:
+    source = Ild5500Source(ild_config(1, reference_mm="range_start"), 500)
+    assert source.ref_mm == 0.0 and source.status()["reference"] == "range_start"
+    assert Ild5500Source(ild_config(1), 500).status()["reference"] == "auto"     # the helper asks for auto
 
 
 def test_addresses_come_from_the_env_file_or_the_default(monkeypatch: pytest.MonkeyPatch) -> None:

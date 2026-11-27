@@ -1,6 +1,7 @@
 // Mission mode overlay: drawn over the darkened twin for the pitch.
 import { useEffect, useRef, useState } from "react";
-import { KIND_LABEL, signed } from "../lib/format";
+import { KIND_LABEL } from "../lib/format";
+import { pos, shownFor } from "../lib/units";
 import { series } from "../lib/live";
 import { useStore } from "../state/store";
 import type { SensorInfo } from "../types";
@@ -32,7 +33,7 @@ function Dial({ sensor, side }: { sensor: SensorInfo; side: "left" | "right" }) 
           arcRef.current.style.strokeDasharray = `${len} ${CIRC}`;
           arcRef.current.style.strokeDashoffset = `${-from * ARC * CIRC}`;
         }
-        if (valueRef.current) valueRef.current.textContent = v === null ? "–" : signed(v, 1);
+        if (valueRef.current) valueRef.current.textContent = v === null ? "–" : pos(v, shownFor(sensor), 1);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -56,7 +57,7 @@ function Dial({ sensor, side }: { sensor: SensorInfo; side: "left" | "right" }) 
       </svg>
       <div className="dial-text">
         <span ref={valueRef}>–</span>
-        <small>{sensor.unit}</small>
+        <small>{shownFor(sensor).unit}</small>
       </div>
       <div className="dial-name">{sensor.name}</div>
     </div>

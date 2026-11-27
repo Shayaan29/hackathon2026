@@ -10,6 +10,12 @@ hotel, or to see what the cockpit does when something goes wrong.
     python scripts/fake_ild5500.py --scenario vibration --after 30   # ... after 30 s (the cockpit learns "normal" first)
     python scripts/fake_ild5500.py --scenario no-target    # the sensor sees nothing (status code "no peak")
     python scripts/fake_ild5500.py --scenario drift        # the target slowly moves away
+    python scripts/fake_ild5500.py --scenario extended     # the target moves out of the measuring range, but
+                                                           # stays inside the extended range (the LED would flash)
+    python scripts/fake_ild5500.py --scenario out-of-range # the sensor reports "target beyond the range"
+
+Distances are what DIST1 is: millimetres counted from the start of the measuring range (0 to 10 for an
+ILD5500-10, the middle is 5), so the cockpit shows the same numbers as the sensor's web page.
 
 Then start the cockpit with   SENSORS_FILE=config/sensors.live.yaml   LIVE_SENSOR_HOST=127.0.0.1
 LIVE_SENSOR_PORT=1024   (in backend/.env or in the shell).
@@ -33,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.sources.ild5500 import HEADER, PREAMBLE, SIGNAL_ORDER  # noqa: E402
 
-SCENARIOS = ("quiet", "vibration", "drift", "no-target", "out-of-range")
+SCENARIOS = ("quiet", "vibration", "drift", "extended", "no-target", "out-of-range")
 NO_PEAK = 0x7FFFFF04
 AFTER_RANGE = 0x7FFFFF06
 
@@ -48,6 +54,8 @@ def distance_mm(t: np.ndarray, scenario: str, mid_mm: float, noise_um: float, rn
         mm += shaking * 0.012 * np.sin(2 * math.pi * 48.0 * t)
     elif scenario == "drift":
         mm += np.clip(t - after, 0.0, None) * (6.0 / 60.0) / 1000.0     # 6 µm per minute
+    elif scenario == "extended":
+        mm += np.clip((t - after) / 3.0, 0.0, 1.0) * 6.5                # 3 s to 6.5 mm further away: 11.5 mm
     return mm
 
 
@@ -125,7 +133,9 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=400, help="readings per block (default 400)")
     parser.add_argument("--signals", default="DIST1", help="comma separated, default DIST1")
     parser.add_argument("--scenario", choices=SCENARIOS, default="quiet")
-    parser.add_argument("--mid", type=float, default=70.0, help="distance of the target in mm (default 70)")
+    parser.add_argument("--mid", type=float, default=5.0,
+                        help="distance of the target in mm from the start of the measuring range (default 5, "
+                             "the middle of an ILD5500-10)")
     parser.add_argument("--noise", type=float, default=0.8, help="noise in µm, 1 sigma (default 0.8)")
     parser.add_argument("--after", type=float, default=10.0,
                         help="seconds after the client connected until the scenario starts (default 10)")

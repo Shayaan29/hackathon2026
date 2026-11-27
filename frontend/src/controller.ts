@@ -2,7 +2,7 @@
 // typed commands, tool calls from the AI, demo controls and gestures.
 import { api, ApiError, getToken, initToken, setToken } from "./lib/api";
 import { parseCommand, phrase, windowWords, type Intent, type Lang } from "./lib/commands";
-import { KIND_LABEL } from "./lib/format";
+import { KIND_LABEL, setRangeWording } from "./lib/format";
 import { setChartTheme } from "./lib/charts";
 import { incidentChart, recKey, twinSpot } from "./lib/incidents";
 import { ingest, meters, setServerTime } from "./lib/live";
@@ -12,7 +12,7 @@ import { PushToTalkRecognizer, recognitionAvailable, speak, stopSpeaking } from 
 import { RealtimeVoice } from "./lib/voice";
 import { useStore } from "./state/store";
 import type {
-  ChartSpec, ChartView, CockpitEvent, ExploreChart, IncidentDetail, IncidentRow, InsightStep, ManualPassage,
+  ChartSpec, ChartView, CockpitConfig, CockpitEvent, ExploreChart, IncidentDetail, IncidentRow, InsightStep, ManualPassage,
   RecommendationSet, RecordingPublic, ServerMessage, SpectrumData, DriftData, ViewData,
 } from "./types";
 
@@ -46,13 +46,19 @@ class Controller {
 
   // -- start-up --------------------------------------------------------
 
+  /** Keeps the configuration and the words that depend on it (a measuring range or a tolerance) together. */
+  private useConfig(config: CockpitConfig): void {
+    setRangeWording(config.sensors.length > 0 && config.sensors.every((s) => s.tolerance_kind === "measuring_range"));
+    store().patch({ config });
+  }
+
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
     initToken();
     try {
       const config = await api.config();
-      store().patch({ config });
+      this.useConfig(config);
       if (config.token_required) void this.checkToken();
       else store().patch({ tokenOk: true });
     } catch (error) {
@@ -260,7 +266,7 @@ class Controller {
         const plan = await api.assistant(sensor.id);
         const before = hints[sensor.id];
         hints[sensor.id] = plan.status;
-        if (plan.status === "improve" && before !== "improve") {
+        if (plan.status !== "ok" && before !== plan.status) {
           store().pushFeed({ id: `setup-${sensor.id}-${Math.round(plan.t)}`, t: plan.t, type: "setup",
             sensor: sensor.id, text: plan.summary });
         }
@@ -432,7 +438,8 @@ class Controller {
   private onMessage(message: ServerMessage): void {
     switch (message.type) {
       case "hello":
-        store().patch({ config: message.config, status: message.status });
+        this.useConfig(message.config);
+        store().patch({ status: message.status });
         setServerTime(message.status.t);
         message.events.forEach((e) => store().addEvent(e));
         if (!store().stage.length) this.show({ view: "timeseries", sensors: [message.config.sensors[0]?.id ?? "s1"], window_s: 300 });
@@ -838,7 +845,8 @@ class Controller {
           const minutes = data.forecast?.minutes_to_limit;
           const rate = data.fit?.rate_per_min ?? 0;
           if (minutes !== null && minutes !== undefined && Math.abs(rate) >= 1) {
-            this.say(phrase("drift_eta", lang, { name, rate: rate.toFixed(1), minutes: Math.round(minutes) }), lang);
+            const key = data.limit_word === "measuring range" ? "drift_eta_range" : "drift_eta";
+            this.say(phrase(key, lang, { name, rate: rate.toFixed(1), minutes: Math.round(minutes) }), lang);
           } else {
             this.say(phrase("drift_none", lang, { name }), lang);
           }
@@ -855,8 +863,14 @@ class Controller {
         for (const sid of sensors) {
           const result = (await api.analyze(sid, 60)) as { latest?: number; within_tolerance?: boolean; observations?: string[]; name?: string };
           const name = result.name ?? this.sensorName(sid);
-          const value = typeof result.latest === "number" ? result.latest.toFixed(1) : "?";
-          parts.push(phrase(result.within_tolerance === false ? "status_out" : "status_ok", lang, { name, value }));
+          // a sensor with a data sheet is read in millimetres and judged by its measuring range
+          const info = store().config?.sensors.find((s) => s.id === sid);
+          const inRange = info?.tolerance_kind === "measuring_range" && info.display !== null;
+          const value = typeof result.latest !== "number" ? "?"
+            : inRange ? (result.latest * (info?.display?.scale ?? 0.001)).toFixed(3) : result.latest.toFixed(1);
+          const key = inRange ? (result.within_tolerance === false ? "status_out_range" : "status_ok_range")
+            : (result.within_tolerance === false ? "status_out" : "status_ok");
+          parts.push(phrase(key, lang, { name, value }));
           const notable = (result.observations ?? []).filter((o) => !o.startsWith("Nothing unusual"));
           if (notable.length && lang === "en") parts.push(notable[0]);
         }

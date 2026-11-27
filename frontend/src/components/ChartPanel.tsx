@@ -6,6 +6,7 @@ import {
   spectrumOption, withAnnotations, type ChartOption,
 } from "../lib/charts";
 import { ago, signed } from "../lib/format";
+import { posUnit, shownOf } from "../lib/units";
 import { useStore, type StagePanel } from "../state/store";
 import type {
   BarData, BoxplotData, DriftData, HistogramData, HistoryData, IncidentChartData, ScatterData, SpectrumData, ViewData,
@@ -55,6 +56,11 @@ function describe(data: ViewData | null, fallbackTitle: string): { title: string
     const s = d.series[0];
     const names = d.series.map((x) => x.name).join(" and ");
     if (!s) return { title: "How the readings are spread", detail: "not enough data" };
+    // Cpk judges a part's tolerance; a sensor's measuring range gets the number of readings instead
+    if (s.capability === false) {
+      return { title: `${names}: how the readings are spread`,
+        detail: `${windowText(d.window_s)}, ${s.n.toLocaleString()} readings`, tone: s.outside > 0 ? "warn" : undefined };
+    }
     return { title: `${names}: how the readings are spread`,
       detail: `${windowText(d.window_s)}, Cpk ${s.cpk.toFixed(1)}`, tone: s.cpk < 1.33 ? "warn" : undefined };
   }
@@ -94,7 +100,8 @@ function describe(data: ViewData | null, fallbackTitle: string): { title: string
     const d = data as DriftData;
     if (!d.fit || Math.abs(d.fit.rate_per_min) < 1) return { title: `${d.name}: drift and forecast`, detail: "No steady drift" };
     const minutes = d.forecast?.minutes_to_limit;
-    const eta = minutes !== null && minutes !== undefined ? `, tolerance limit in about ${Math.round(minutes)} min` : "";
+    const limit = d.limit_word === "measuring range" ? "leaves the measuring range" : "tolerance limit";
+    const eta = minutes !== null && minutes !== undefined ? `, ${limit} in about ${Math.round(minutes)} min` : "";
     return {
       title: `${d.name}: drift and forecast`,
       detail: `${signed(d.fit.rate_per_min, 1)} ${d.unit}/min${eta}`,
@@ -107,7 +114,8 @@ function describe(data: ViewData | null, fallbackTitle: string): { title: string
   }
   const s = h.series[0];
   const last = [...(s?.values ?? [])].reverse().find((v) => v !== null);
-  return { title: `${s?.name ?? ""}: live signal`, detail: `${windowText(h.window_s)}, now ${signed(last ?? null, 2)} ${s?.unit ?? ""}` };
+  const shown = shownOf(s?.unit ?? "", s?.display, s?.limit_word);
+  return { title: `${s?.name ?? ""}: live signal`, detail: `${windowText(h.window_s)}, now ${posUnit(last ?? null, shown, 2)}` };
 }
 
 export function ChartPanel({ panel, depth, register }: {

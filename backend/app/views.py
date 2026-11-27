@@ -47,6 +47,8 @@ def history(engine: Engine, sensor_ids: list[str], window_s: float,
             "dt": dt_out,
             "values": to_json_list(out, 3),
             "tolerance": cfg.tolerance.as_dict(),
+            "display": cfg.display.as_dict() if cfg.display else None,
+            "limit_word": cfg.limit_word,
         })
     events = [e for e in engine.recent_events(limit=100, since=now - window_s)
               if e["sensor"] in sensor_ids or set(e["related_sensors"]) & set(sensor_ids)]
@@ -109,6 +111,7 @@ def drift(engine: Engine, sensor_id: str, window_s: float = 900.0, horizon_min: 
     result: dict[str, Any] = {
         "view": "drift", "sensor": sensor_id, "name": cfg.name, "unit": cfg.unit,
         "window_s": window_s, "tolerance": cfg.tolerance.as_dict(),
+        "display": cfg.display.as_dict() if cfg.display else None, "limit_word": cfg.limit_word,
         "t_rel": [], "values": [], "fit": None, "forecast": None,
     }
     if t.size < 3:

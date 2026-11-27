@@ -1,6 +1,6 @@
 // The 3D digital twin with measurement callouts that follow each sensor.
 import { useEffect, useRef, useState } from "react";
-import { signed } from "../lib/format";
+import { pos, shownFor } from "../lib/units";
 import { series } from "../lib/live";
 import { serverNow } from "../lib/live";
 import { trackFor } from "../lib/tracks";
@@ -88,7 +88,7 @@ export function TwinView() {
             for (const sensor of get().config?.sensors ?? []) {
               const el = valueRefs.current.get(sensor.id);
               const latest = series(sensor.id).latest();
-              if (el) el.textContent = latest && Number.isFinite(latest.v) ? signed(latest.v, 2) : "no reading";
+              if (el) el.textContent = latest && Number.isFinite(latest.v) ? pos(latest.v, shownFor(sensor), 2) : "no reading";
             }
           }
         }
@@ -158,7 +158,7 @@ export function TwinView() {
             <span className="callout-name">{sensor.name}</span>
             <span className="callout-value">
               <span ref={(el) => { if (el) valueRefs.current.set(sensor.id, el); else valueRefs.current.delete(sensor.id); }}>…</span>
-              <small>{sensor.unit}</small>
+              <small>{shownFor(sensor).unit}</small>
             </span>
           </span>
         </div>

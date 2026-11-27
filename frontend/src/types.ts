@@ -19,6 +19,34 @@ export interface SettingSpec {
   max?: number;
 }
 
+/** Positions are shown in the sensor's own unit (mm); the signal itself stays in `unit` (µm). */
+export interface Display {
+  unit: string;
+  /** signal unit times scale is the shown unit */
+  scale: number;
+  decimals: number;
+}
+
+/** The data sheet of a known sensor model (see backend/app/sensor_specs.py). Distances are from the start of the range. */
+export interface SensorSpecInfo {
+  family: string;
+  model: string;
+  title: string;
+  measuring_range_mm: number;
+  start_mm: number;
+  mid_mm: number;
+  end_mm: number;
+  /** extended range, measuring range and middle in signal units (µm) from the start of the measuring range */
+  zones_um: { ext_low: number; low: number; mid: number; high: number; ext_high: number };
+  linearity_um: number;
+  repeatability_um: number;
+  temperature_um_per_k: number;
+  manual: string;
+}
+
+/** Where a reading lies, in the words of the sensor's state LED. */
+export type RangeZone = "standard" | "before" | "after" | "outside";
+
 export interface SensorInfo {
   id: string;
   name: string;
@@ -26,6 +54,12 @@ export interface SensorInfo {
   unit: string;
   nominal: number;
   tolerance: Tolerance;
+  /** part: the tolerance of the workpiece. measuring_range: the measuring range of the sensor */
+  tolerance_kind: "part" | "measuring_range";
+  /** what the limits are called in texts: "tolerance" or "measuring range" */
+  limit_word: string;
+  display: Display | null;
+  spec: SensorSpecInfo | null;
   fixture: string;
   source: string;
   settings: Record<string, SettingSpec>;
@@ -73,6 +107,10 @@ export interface LiveStatus {
   invalid_percent: number | null;
   last_status: string | null;
   reference_mm: number | null;
+  /** how the readings were counted: range_start (as the sensor reports), auto, mid or a number */
+  reference?: string;
+  /** why readings were invalid in the last seconds: status code name to share (0 to 1) */
+  invalid_reasons?: Record<string, number>;
   intensity_percent: number | null;
   temperature_c: number | null;
 }
@@ -153,8 +191,11 @@ export interface AssistantPlan {
   sensor: string;
   name: string;
   unit: string;
-  status: "ok" | "improve";
+  /** advice: the sensor's own settings cannot be changed from the cockpit, so only what to check */
+  status: "ok" | "improve" | "advice";
   summary: string;
+  /** what the comparison is based on, for example the data sheet linearity */
+  basis?: string;
   current: Record<string, string | number>;
   measured: {
     noise: number | null;
@@ -210,8 +251,11 @@ export interface HistogramData {
   series: {
     sensor: string; name: string; unit: string; nominal: number; edges: number[]; counts: number[];
     n: number; mean: number; std: number; p05: number; p95: number; tolerance: Tolerance; cp: number; cpk: number;
-    /** readings outside the tolerance, and the one furthest from nominal */
+    /** readings outside the tolerance (or measuring range), and the one furthest from nominal */
     outside: number; worst: number | null;
+    display: Display | null; limit_word: string;
+    /** false for a sensor's measuring range: Cp and Cpk judge a part's tolerance only */
+    capability: boolean;
   }[];
   insights: InsightStep[];
 }
@@ -222,6 +266,7 @@ export interface BoxplotData {
   group_by: string;
   per: string;
   unit: string;
+  display: Display | null;
   sensors: string[];
   categories: string[];
   boxes: number[][];
@@ -232,8 +277,8 @@ export interface BoxplotData {
 export interface ScatterData {
   view: "scatter";
   window_s: number;
-  x: { sensor: string; name: string; unit: string };
-  y: { sensor: string; name: string; unit: string };
+  x: { sensor: string; name: string; unit: string; display: Display | null };
+  y: { sensor: string; name: string; unit: string; display: Display | null };
   points: [number, number][];
   r: number;
   slope: number;
@@ -246,6 +291,7 @@ export interface BarData {
   metric: string;
   window_s: number;
   unit: string;
+  display: Display | null;
   categories: string[];
   values: number[];
   label: string;
@@ -257,6 +303,8 @@ export interface RangeData {
   sensor: string;
   name: string;
   unit: string;
+  display: Display | null;
+  limit_word: string;
   tolerance: Tolerance;
   nominal: number;
   t0: number;
@@ -288,6 +336,8 @@ export interface Series {
   dt: number;
   values: (number | null)[];
   tolerance: Tolerance;
+  display?: Display | null;
+  limit_word?: string;
 }
 
 export interface HistoryData {
@@ -316,6 +366,8 @@ export interface DriftData {
   sensor: string;
   name: string;
   unit: string;
+  display: Display | null;
+  limit_word: string;
   window_s: number;
   tolerance: Tolerance;
   t_rel: (number | null)[];

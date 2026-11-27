@@ -26,7 +26,7 @@ def get_data(engine: Engine, sensor: str, window_s: float = 10.0) -> dict[str, A
     noise = robust_sigma(values)
     baseline = engine.detector.baseline(sid)
     latest = stats["latest"]
-    return {
+    result = {
         "sensor": sid,
         "name": cfg.name,
         "model": cfg.model,
@@ -46,6 +46,24 @@ def get_data(engine: Engine, sensor: str, window_s: float = 10.0) -> dict[str, A
         "settings": dict(engine.values[sid]),
         "source": engine.source_info.get(sid, {}).get("type"),
     }
+    if cfg.display is not None:
+        # a sensor that reports millimetres: say positions the way its own web page does
+        def where(value: float | None) -> str | None:
+            return None if value is None else cfg.pos(value)
+
+        zone = cfg.spec.zone(latest) if cfg.spec is not None and latest is not None else None
+        result["position"] = {
+            "latest": where(latest), "mean": where(stats["mean"]), "min": where(stats["min"]),
+            "max": where(stats["max"]),
+            "limits": f"{cfg.pos(cfg.tolerance.low)} to {cfg.pos(cfg.tolerance.high)} ({cfg.limit_word})",
+            "where": zone.text if zone else None,
+            "state_led": zone.led if zone else None,
+            "note": "Positions are distances from the start of the measuring range, in millimetres. Noise, "
+                    "peaks and drift rates are in micrometres.",
+        }
+    if cfg.spec is not None:
+        result["datasheet"] = cfg.spec.summary()
+    return result
 
 
 def analyze(engine: Engine, sensor: str, window_s: float = 60.0) -> dict[str, Any]:
@@ -75,13 +93,19 @@ def analyze(engine: Engine, sensor: str, window_s: float = 60.0) -> dict[str, An
         }
         text = f"Steady drift of {trend['rate_per_min']:+.1f} {cfg.unit} per minute"
         if minutes is not None:
-            text += f", reaching the tolerance limit in about {minutes:.0f} minutes"
+            limit = "the end of the measuring range" if cfg.tolerance_kind == "measuring_range" \
+                else "the tolerance limit"
+            text += f", reaching {limit} in about {minutes:.0f} minutes"
         ongoing.append(text + ".")
     else:
         result["trend"] = {"drifting": False}
 
     if result["within_tolerance"] is False:
-        ongoing.insert(0, "The value is currently outside the tolerance band.")
+        if cfg.tolerance_kind == "measuring_range" and cfg.spec is not None and result["latest"] is not None:
+            zone = cfg.spec.zone(result["latest"])
+            ongoing.insert(0, f"The target is currently {zone.text}, at {cfg.pos(result['latest'])}.")
+        else:
+            ongoing.insert(0, "The value is currently outside the tolerance band.")
 
     _, _, recent = buf.fast_window(1.0)
     invalid_share = float(np.mean(~np.isfinite(recent))) if recent.size else 0.0

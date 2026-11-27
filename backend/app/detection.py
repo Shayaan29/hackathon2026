@@ -304,11 +304,14 @@ class Detector:
         rate = drift["rate_per_min"]
         unit = sensor.unit
         summary = f"{sensor.name} is drifting {_fmt(rate)} {unit} per minute"
+        ranged = sensor.tolerance_kind == "measuring_range"
         if minutes is not None:
-            summary += (f"; at this rate it leaves tolerance in about {minutes:.0f} minutes."
-                        if minutes >= 1 else "; it is about to leave tolerance.")
+            leaves = "leaves the measuring range" if ranged else "leaves tolerance"
+            summary += (f"; at this rate it {leaves} in about {minutes:.0f} minutes."
+                        if minutes >= 1 else f"; it is about to {leaves.replace('leaves', 'leave')}.")
         else:
-            summary += ", moving back towards the middle of the tolerance band."
+            summary += (", moving back towards the middle of the measuring range." if ranged
+                        else ", moving back towards the middle of the tolerance band.")
         return Event(
             id=self._new_id(now), sensor=sid, kind="drift", severity=severity, t=now,
             numbers={"rate_per_min": round(rate, 2), "current": round(drift["current"], 1),
@@ -325,12 +328,35 @@ class Detector:
         if not self._gate(sid, "out_of_range", outside, now) or value is None:
             return None
         limit = sensor.tolerance.high if value > sensor.tolerance.high else sensor.tolerance.low
+        numbers: dict[str, Any] = {"value": round(value, 1), "limit": limit, "unit": sensor.unit}
+        if sensor.tolerance_kind == "measuring_range" and sensor.spec is not None:
+            summary = self._range_summary(sensor, value, limit, numbers)
+        else:
+            summary = (f"{sensor.name} is out of tolerance: {sensor.pos(value)} "
+                       f"against a limit of {sensor.pos(limit)}.")
         return Event(
             id=self._new_id(now), sensor=sid, kind="out_of_range", severity="critical", t=now,
-            numbers={"value": round(value, 1), "limit": limit, "unit": sensor.unit},
-            summary=(f"{sensor.name} is out of tolerance: {_fmt(value)} {sensor.unit} "
-                     f"against a limit of {_fmt(limit)} {sensor.unit}."),
+            numbers=numbers, summary=summary,
         )
+
+    @staticmethod
+    def _range_summary(sensor: SensorConfig, value: float, limit: float, numbers: dict[str, Any]) -> str:
+        """The target left the measuring range of the sensor: say where it is, in the sensor's own terms."""
+        spec = sensor.spec
+        assert spec is not None
+        zone = spec.zone(value)
+        numbers.update({"zone": zone.name, "led": zone.led, "range": spec.range_text,
+                        "extended_range": spec.extended_text})
+        away = sensor.pos(abs(value - limit))
+        where = "before the start of" if value < limit else "beyond the end of"
+        text = (f"{sensor.name} is outside its measuring range: the target is at {sensor.pos(value)}, "
+                f"{away} {where} the {spec.range_text} range.")
+        if zone.name in ("before", "after"):
+            text += (f" The sensor still measures in its extended range ({spec.extended_text}), "
+                     f"but the data sheet accuracy only holds inside {spec.range_text}.")
+        else:
+            text += f" That is outside even the extended range of {spec.extended_text}."
+        return text
 
     def _invalid(self, sid: str, m: Metrics, now: float) -> Event | None:
         bad = m.invalid_share >= self.cfg.invalid_min_share

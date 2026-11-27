@@ -140,6 +140,10 @@ def run_check(host: str, port: int, seconds: float, signals: list[str],
         low, mean, high = valid.min(), valid.mean(), valid.max()
         say(f"Distance: mean {mean:.3f} mm, spread {high - low:.4f} mm, noise {valid.std() * 1000:.2f} µm "
             f"(1 sigma, raw readings)")
+        say("DIST1 counts from the start of the measuring range: 0 mm is the start, the end is the measuring range "
+            "of your model (an ILD5500-10: 10 mm, with an extended range of -2.5 to 12.5 mm). The cockpit shows "
+            "these numbers as they are. The mean should match the distance in the sensor's web page, unless the "
+            "sensor is zeroed or mastered there.")
     say(f"Invalid readings: {invalid_share * 100:.1f} %")
     if code is not None:
         say(f"Last status code: {STATUS_TEXT.get(code, hex(code))}")
