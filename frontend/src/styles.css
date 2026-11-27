@@ -148,6 +148,15 @@ button { cursor: pointer; }
 .gauge-tick { position: absolute; top: 100%; width: 1px; height: 5px; background: var(--steel); }
 .gauge-tick i { position: absolute; top: 5px; left: 0; transform: translateX(-50%); font: 500 12px var(--cond); font-style: normal; color: var(--steel); }
 .gauge-mid { top: 0; height: 100%; background: rgba(21, 32, 43, 0.22); }
+/* a sensor with a data sheet: the measuring range, flanked by its extended range like the state LED (flashing green) */
+.gauge-range { background: rgba(21, 32, 43, 0.1); }
+.gauge-range .gauge-go { background: rgba(19, 138, 94, 0.5); }
+.gauge-ext { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(19, 138, 94, 0.34) 0 4px, rgba(19, 138, 94, 0.1) 4px 8px); }
+.gauge-edge { height: 3px; }
+.gauge-edge i { color: var(--steel); opacity: 0.8; }
+.readout-zone { font-weight: 600; color: var(--go-text, var(--go)); }
+.readout-zone[data-zone="before"], .readout-zone[data-zone="after"] { color: var(--amber-text); }
+.readout-zone[data-zone="outside"], .readout-zone[data-zone="none"] { color: var(--nogo); }
 .gauge-needle {
   position: absolute; top: -5px; bottom: -5px; left: 50%; width: 4px; margin-left: -2px; border-radius: 2px;
   background: var(--laser); box-shadow: 0 0 0 2px var(--card); transition: left 0.08s linear;

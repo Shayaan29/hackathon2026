@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
+from .sensor_specs import MANUAL
 
 log = logging.getLogger("cockpit.realtime")
 
@@ -28,23 +29,48 @@ class RealtimeError(RuntimeError):
         self.status_code = status_code
 
 
+def _sensor_line(s: Any) -> str:
+    settings = ", ".join(s.settings) or "none (they are set in the sensor's own web page)"
+    if s.spec is None:
+        return (f"- {s.name} (id {s.id}): {s.model}, unit {s.unit}, tolerance {s.tolerance.low:g} to "
+                f"{s.tolerance.high:g} {s.unit}, adjustable settings: {settings}")
+    if s.display is None:
+        return (f"- {s.name} (id {s.id}): {s.model}, unit {s.unit}, {s.limit_word} {s.tolerance.low:g} to "
+                f"{s.tolerance.high:g} {s.unit}, adjustable settings: {settings}")
+    return (f"- {s.name} (id {s.id}): {s.spec.title}. Positions are distances from the start of the measuring "
+            f"range in millimetres, exactly as the sensor's web page shows them: {s.spec.range_text} is the "
+            f"measuring range and the limit that counts as 'tolerance'. Noise, peaks and drift rates are in "
+            f"micrometres. Adjustable settings from the cockpit: {settings}")
+
+
+def _datasheet_lines(settings: Settings) -> str:
+    blocks = []
+    for s in settings.sensors:
+        if s.spec is None:
+            continue
+        rows = "\n".join(f"- {r['label']}: {r['value']} (manual p. {r['page']})" for r in s.spec.datasheet_rows())
+        blocks.append(f"Data sheet of {s.name}, {s.spec.title}, from the {MANUAL}:\n{rows}")
+    if not blocks:
+        return ""
+    return ("\n\n" + "\n\n".join(blocks) + "\n"
+            "Use this data sheet for questions about the sensor's range, accuracy, spot size, temperature, rate, "
+            "light or LED, and name the manual page. For anything else about the sensor call search_manual.")
+
+
 def instructions(settings: Settings) -> str:
-    sensor_lines = "\n".join(
-        f"- {s.name} (id {s.id}): {s.model}, unit {s.unit}, tolerance {s.tolerance.low:g} to "
-        f"{s.tolerance.high:g} {s.unit}, adjustable settings: {', '.join(s.settings) or 'none'}"
-        for s in settings.sensors
-    )
+    sensor_lines = "\n".join(_sensor_line(s) for s in settings.sensors)
+    datasheets = _datasheet_lines(settings)
     language = "German" if settings.cockpit.language.lower().startswith("de") else "English"
     name = settings.cockpit.assistant_name
     return f"""You are {name}, the voice copilot of a sensor cockpit that monitors Micro-Epsilon precision displacement sensors on a production line. The operator talks to you while working at the machine.
 
 Sensors:
-{sensor_lines}
+{sensor_lines}{datasheets}
 
 How you speak:
 - You are heard, not read. One or two short sentences per answer. No lists, no markdown.
 - Answer in the language the operator uses. Start in {language}.
-- Round numbers for speech: one decimal for micrometres, whole numbers for hertz and minutes.
+- Round numbers for speech: one decimal for micrometres, whole numbers for hertz and minutes. Say distances of a sensor with a data sheet in millimetres, with up to three decimals, as in the position fields of get_data.
 - Sound calm and precise, like an experienced test engineer.
 
 Hard rules:

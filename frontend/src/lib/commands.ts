@@ -154,6 +154,10 @@ const PHRASES = {
     en: "{name} is drifting {rate} micrometres per minute and reaches the tolerance limit in about {minutes} minutes.",
     de: "{name} driftet {rate} Mikrometer pro Minute und erreicht die Toleranzgrenze in etwa {minutes} Minuten.",
   },
+  drift_eta_range: {
+    en: "{name} is drifting {rate} micrometres per minute and leaves the measuring range in about {minutes} minutes.",
+    de: "{name} driftet {rate} Mikrometer pro Minute und verlässt den Messbereich in etwa {minutes} Minuten.",
+  },
   drift_none: { en: "{name} shows no steady drift right now.", de: "{name} zeigt gerade keine gleichmäßige Drift." },
   back: { en: "Going back.", de: "Zurück." },
   nothing_back: { en: "There is nothing to go back to.", de: "Es gibt nichts, wohin ich zurück kann." },
@@ -176,6 +180,14 @@ const PHRASES = {
   },
   status_ok: { en: "{name} is at {value} micrometres, within tolerance.", de: "{name} steht bei {value} Mikrometer, innerhalb der Toleranz." },
   status_out: { en: "{name} is at {value} micrometres, outside tolerance.", de: "{name} steht bei {value} Mikrometer, außerhalb der Toleranz." },
+  status_ok_range: {
+    en: "{name} is at {value} millimetres, inside the measuring range.",
+    de: "{name} steht bei {value} Millimeter, innerhalb des Messbereichs.",
+  },
+  status_out_range: {
+    en: "{name} is at {value} millimetres, outside the measuring range.",
+    de: "{name} steht bei {value} Millimeter, außerhalb des Messbereichs.",
+  },
 } as const;
 
 export type PhraseKey = keyof typeof PHRASES;

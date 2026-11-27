@@ -42,6 +42,20 @@ export const KIND_LABEL: Record<EventKind, string> = {
   invalid: "Invalid readings",
 };
 
+/** Short names for the alert lines on the timelines. */
+export const KIND_SHORT: Record<string, string> = {
+  vibration: "knock", noise: "noise", drift: "drift", out_of_range: "out of tol.", invalid: "no signal",
+};
+
+/**
+ * What an alert for a target that left its limits is called: a sensor with a data sheet has a measuring range,
+ * a part has a tolerance. Set once when the configuration arrives.
+ */
+export function setRangeWording(measuring: boolean): void {
+  KIND_LABEL.out_of_range = measuring ? "Out of measuring range" : "Out of tolerance";
+  KIND_SHORT.out_of_range = measuring ? "out of range" : "out of tol.";
+}
+
 export const SEVERITY_LABEL: Record<Severity, string> = {
   info: "Info",
   warning: "Warning",

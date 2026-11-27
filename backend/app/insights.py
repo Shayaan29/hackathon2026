@@ -50,6 +50,18 @@ def window_words(seconds: float) -> str:
     return f"the last {seconds:.0f} seconds"
 
 
+def measuring(cfg: Any) -> bool:
+    """True when the limits of this sensor are its measuring range (data sheet), not a part's tolerance."""
+    return cfg.tolerance_kind == "measuring_range" and cfg.spec is not None
+
+
+def band_words(cfg: Any) -> str:
+    """The limits as they are named in a sentence."""
+    if measuring(cfg):
+        return f"the measuring range of {cfg.spec.range_text}"
+    return f"the tolerance of {cfg.pos(cfg.tolerance.low, 0)} to {cfg.pos(cfg.tolerance.high, 0)}"
+
+
 def samples(engine: Engine, sid: str, window_s: float) -> tuple[np.ndarray, np.ndarray, str]:
     """(times, finite values, what one value is) for a window, finest data available."""
     buf = engine.buffers[sid]
@@ -71,14 +83,13 @@ def _history_single(engine: Engine, data: dict[str, Any]) -> list[dict[str, Any]
     s = data["series"][0]
     sid = s["sensor"]
     cfg = engine.settings.sensor(sid)
-    unit = cfg.unit
     t, v, _ = samples(engine, sid, data["window_s"])
     if v.size < 10:
         return []
     steps = []
     p5, p95 = np.percentile(v, [5, 95])
     steps.append(step(f"Over {window_words(data['window_s'])}, {cfg.name} mostly stayed between "
-                      f"{signed(p5)} and {signed(p95)} {unit}.",
+                      f"{cfg.pos(float(p5))} and {cfg.pos(float(p95))}.",
                       {"type": "yspan", "y0": float(p5), "y1": float(p95), "sensor": sid, "label": "normal range"}))
     moments = [e for e in data["events"] if e["kind"] != "drift"][-2:]
     for e in moments:
@@ -87,14 +98,17 @@ def _history_single(engine: Engine, data: dict[str, Any]) -> list[dict[str, Any]
     dev = np.abs(v - cfg.nominal)
     i = int(dev.argmax())
     if not any(abs(e["t"] - t[i]) < 3.0 for e in moments):
-        steps.append(step(f"The largest deviation was {signed(v[i])} {unit}, at {clock(float(t[i]))}.",
+        what = "The reading furthest from the middle of the range" if measuring(cfg) else "The largest deviation"
+        steps.append(step(f"{what} was {cfg.pos(float(v[i]))}, at {clock(float(t[i]))}.",
                           {"type": "point", "t": float(t[i]), "y": float(v[i]), "sensor": sid, "label": "largest"}))
     last = float(v[-1])
-    inside = cfg.tolerance.low <= last <= cfg.tolerance.high
-    steps.append(step(f"Right now it reads {signed(last)} {unit}, "
-                      f"{'well inside' if inside else 'outside'} the tolerance of "
-                      f"{signed(cfg.tolerance.low, 0)} to {signed(cfg.tolerance.high, 0)} {unit}.",
-                      {"type": "point", "t": float(t[-1]), "y": last, "sensor": sid, "label": "now"}))
+    if measuring(cfg):
+        text = f"Right now it reads {cfg.pos(last)}, {cfg.spec.zone(last).text}."
+    else:
+        inside = cfg.tolerance.low <= last <= cfg.tolerance.high
+        text = (f"Right now it reads {cfg.pos(last)}, {'well inside' if inside else 'outside'} "
+                f"{band_words(cfg)}.")
+    steps.append(step(text, {"type": "point", "t": float(t[-1]), "y": last, "sensor": sid, "label": "now"}))
     return steps
 
 
@@ -177,28 +191,35 @@ def for_spectrum(engine: Engine, data: dict[str, Any]) -> list[dict[str, Any]]:
 def for_drift(engine: Engine, data: dict[str, Any]) -> list[dict[str, Any]]:
     t_rel = np.array(data["t_rel"], dtype=float)
     v = np.array([x if x is not None else np.nan for x in data["values"]], dtype=float)
-    unit = data["unit"]
+    cfg = engine.settings.sensor(data["sensor"])
+    unit = data["unit"]          # rates stay in the signal unit (µm per minute), positions in the sensor's unit
     if t_rel.size < 5:
         return []
     fit = data.get("fit")
     if not fit or abs(fit["rate_per_min"]) < 1.0:
         ok = np.isfinite(v)
         p5, p95 = np.percentile(v[ok], [5, 95]) if ok.any() else (0.0, 0.0)
-        return [step(f"No steady drift: the one-second averages just wander between {signed(p5)} and "
-                     f"{signed(p95)} {unit}.", {"type": "yspan", "y0": float(p5), "y1": float(p95), "label": "wander"})]
+        return [step(f"No steady drift: the one-second averages just wander between {cfg.pos(float(p5))} and "
+                     f"{cfg.pos(float(p95))}.", {"type": "yspan", "y0": float(p5), "y1": float(p95), "label": "wander"})]
     start = float(fit["from_rel"])
     before = v[(t_rel < start) & np.isfinite(v)]
     steps = []
     if before.size > 3:
         steps.append(step(f"Until {window_words(-start).replace('the last ', '')} ago the value was steady "
-                          f"around {signed(float(np.median(before)))} {unit}.",
+                          f"around {cfg.pos(float(np.median(before)))}.",
                           {"type": "xspan", "x0": float(t_rel[0]), "x1": start, "label": "steady"}))
     steps.append(step(f"Since then it moves {signed(fit['rate_per_min'])} {unit} per minute, in a straight line.",
                       {"type": "xspan", "x0": start, "x1": 0.0, "label": f"{signed(fit['rate_per_min'])} {unit}/min"}))
     forecast = data.get("forecast") or {}
     crossing = forecast.get("crossing")
     if crossing and forecast.get("minutes_to_limit") is not None:
-        steps.append(step(f"At this rate it reaches the tolerance limit of {signed(crossing['value'], 0)} {unit} "
-                          f"in about {forecast['minutes_to_limit']:.0f} minutes. That is the time left to act.",
-                          {"type": "point", "x": crossing["t_rel"], "y": crossing["value"], "label": "limit"}))
+        minutes = forecast["minutes_to_limit"]
+        if measuring(cfg):
+            edge = "end" if crossing["value"] >= cfg.tolerance.high else "start"
+            text = (f"At this rate the target reaches the {edge} of the measuring range ({cfg.pos(crossing['value'], 0)}) "
+                    f"in about {minutes:.0f} minutes. That is the time left to act.")
+        else:
+            text = (f"At this rate it reaches the tolerance limit of {cfg.pos(crossing['value'], 0)} "
+                    f"in about {minutes:.0f} minutes. That is the time left to act.")
+        steps.append(step(text, {"type": "point", "x": crossing["t_rel"], "y": crossing["value"], "label": "limit"}))
     return steps

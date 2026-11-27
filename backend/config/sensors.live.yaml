@@ -3,9 +3,17 @@
 # -----------------------------------------------------------------------------
 #  Use it with   SENSORS_FILE=config/sensors.live.yaml   in backend/.env
 #
-#  Everything marked REPLACE is yours to set at the sensor. All values are the
-#  displacement from a reference position in micrometres (µm): 0 means "exactly
-#  where it was when the cockpit started" (see reference_mm below).
+#  Everything marked REPLACE is yours to set at the sensor.
+#
+#  The readings are the distance DIST1 exactly as the sensor reports it: in
+#  millimetres from the start of its measuring range (0 mm = start, 10 mm = end
+#  for an ILD5500-10), the same number as on the sensor's web page. Inside, the
+#  cockpit calculates in micrometres (µm) so that noise and vibration of a few
+#  µm stay visible; screens, alerts and reports show positions in mm.
+#
+#  The model decides the rest: its measuring range, extended range, linearity,
+#  temperature stability, light spot and LED states come from the operating
+#  instructions (backend/app/sensor_specs.py, with the manual page of each value).
 #
 #  Before the first start run:   python scripts/sensor_check.py
 #  It tells you in plain words whether the connection works.
@@ -13,7 +21,7 @@
 
 cockpit:
   title: "KI Sensor Cockpit"
-  team: "Team Name"                 # REPLACE: your team name, shown in the header
+  team: "Mega Brains"               # your team name, shown in the header
   assistant_name: "Epsilon"
   language: "en"                    # en or de
 
@@ -26,10 +34,15 @@ engine:
 sensors:
   - id: s1
     name: "ILD5500"
-    model: "optoNCDT ILD5500-50"    # REPLACE: the model from the sensor label (-10, -25, -50, -100 or -200)
+    model: "optoNCDT ILD5500-10"    # REPLACE: the model from the sensor label (-10, -25, -50, -100 or -200)
     unit: "µm"
-    nominal: 0.0
-    tolerance: { low: -50.0, high: 50.0 }   # REPLACE: the tolerance band of your part, in µm
+    # What counts as "in tolerance":
+    #   measuring_range   the measuring range of the model above (0 to 10 mm for an ILD5500-10): an alert fires
+    #                     when the target leaves it, and the reports speak of the measuring range
+    #   { low: 4950.0, high: 5050.0 }   or the tolerance band of your own part, in µm from the start of the
+    #                     measuring range (add  display: mm  below to keep the readings in millimetres)
+    tolerance: measuring_range
+    nominal: auto                   # auto = the middle of the measuring range; or a number in µm
     fixture: "fixture-a"
     source:
       type: ild5500
@@ -38,15 +51,15 @@ sensors:
       host: ${LIVE_SENSOR_HOST:-169.254.168.150}
       port: ${LIVE_SENSOR_PORT:-1024}       # the port set under "Server TCP/IP" in the sensor
       # What is zero?
-      #   auto  the target position during the first second after the cockpit starts (default)
-      #   mid   the middle of the measuring range of the model in range_mm
-      #   70.0  a distance in mm that you choose
-      reference_mm: auto
-      range_mm: 50                      # REPLACE: 10, 25, 50, 100 or 200, only used by reference_mm: mid
+      #   range_start  the start of the measuring range, exactly as the sensor reports it (default here)
+      #   auto         the target position during the first second after the cockpit starts: shows only changes
+      #   mid          the middle of the measuring range
+      #   35.5         a number: that distance in mm from the start of the range is zero
+      reference_mm: range_start
       sensor_rate_hz: auto              # measured from the stream; a number (Hz) overrides it
       signals: [DIST1]                  # the boxes ticked under "Ethernet data output" in the sensor
                                         # (add INTENSITY and TEMPERATURE to see them in the cockpit)
-      invert: false                     # true: a target moving away counts as negative
+      invert: false                     # true: a target moving away counts as negative (not with measuring_range)
     # No "settings" here: the sensor's own settings are changed in its web page, not from the cockpit.
 
 # Alert thresholds. These are the defaults; tune them with the real signal.

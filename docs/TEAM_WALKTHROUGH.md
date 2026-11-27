@@ -408,6 +408,13 @@ Fill this in for yourself. Write "yes", or describe what you saw.
   against a stand-in (`scripts/fake_ild5500.py`), so the real sensor is its final
   test: run `scripts\sensor_check.py` first. The MEDAQLib source for other
   sensor types is still a template.
+- For a sensor with a data sheet (the ILD5500 models) the cockpit shows the readings in millimetres from the start of
+  the measuring range, the way the sensor reports DIST1, and uses the measuring range as its limits (0 to 10 mm, extended
+  range -2.5 to 12.5 mm for an ILD5500-10). The values come from the operating instructions, each with its page, in
+  `backend/app/sensor_specs.py`. The accuracy figures (linearity ±1.5 µm, repeatability 0.008 µm) hold only under the
+  conditions the instructions state, for example the filter and the measuring rate, so the setup check treats them as a
+  guide, not as a guarantee. If the sensor is mastered or zeroed in its web page, the numbers shift by that offset. To
+  judge a part instead, type a tolerance band in µm into the YAML. Cp and Cpk are only shown for a part tolerance.
 - With the live sensor the demo buttons and the phone shake cannot inject a knock
   or a drift: there is no simulator behind them, and the cockpit answers that the
   source does not support demo events. A real tap on the table or the fixture is

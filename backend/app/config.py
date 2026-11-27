@@ -6,11 +6,16 @@ Two files hold everything a team is expected to change:
 * ``backend/config/sensors.yaml``  sensors, tolerances, dummy settings and alert thresholds
                                    (``sensors.live.yaml`` is the same for the real optoNCDT 5500)
 
+A sensor of a known model (the optoNCDT ILD5500 family) gets its data sheet from ``sensor_specs``: with
+``tolerance: measuring_range`` the limits are the sensor's own measuring range, and readings are shown in the
+millimetres the sensor itself reports.
+
 The rest of the code reads the frozen :class:`Settings` object built here.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -19,6 +24,10 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
+
+from .sensor_specs import SensorSpec, find_spec, known_models
+
+log = logging.getLogger("cockpit.config")
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = BACKEND_DIR.parent
@@ -85,6 +94,23 @@ class Tolerance:
 
 
 @dataclass(frozen=True)
+class Display:
+    """How positions are shown when the sensor reports another unit than the signal: the optoNCDT shows
+    millimetres, the cockpit computes in micrometres (3 decimals of a millimetre would hide the noise)."""
+
+    unit: str = "mm"
+    scale: float = 0.001        # signal unit times scale gives the display unit
+    decimals: int = 4
+
+    def text(self, value: float, decimals: int | None = None) -> str:
+        digits = self.decimals if decimals is None else decimals
+        return f"{value * self.scale:.{digits}f} {self.unit}"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"unit": self.unit, "scale": self.scale, "decimals": self.decimals}
+
+
+@dataclass(frozen=True)
 class SettingSpec:
     """One adjustable sensor setting (dummy until the real sensor is wired in)."""
 
@@ -137,10 +163,29 @@ class SensorConfig:
     fixture: str
     source: dict[str, Any]
     settings: dict[str, SettingSpec]
+    spec: SensorSpec | None = None         # the data sheet of a known model
+    display: Display | None = None         # positions in the sensor's own unit (mm), signal stays in µm
+    tolerance_kind: str = "part"           # part (limits of the workpiece) | measuring_range (of the sensor)
 
     @property
     def source_type(self) -> str:
         return str(self.source.get("type", "simulator"))
+
+    @property
+    def limit_word(self) -> str:
+        """What the limits are called in texts: the part's tolerance, or the sensor's measuring range."""
+        return "measuring range" if self.tolerance_kind == "measuring_range" else "tolerance"
+
+    def pos(self, value: float, digits: int = 1, signed: bool = True) -> str:
+        """A position or a limit as text. In the sensor's own millimetres when there is a display unit,
+        otherwise in the signal unit, signed like +6.0 µm."""
+        if self.display is not None:
+            return self.display.text(value)
+        if signed:
+            text = f"{0:.{digits}f}" if abs(value) < 0.5 * 10 ** -digits else f"{value:+.{digits}f}"
+        else:
+            text = f"{value:.{digits}f}"
+        return f"{text} {self.unit}"
 
     def public(self) -> dict[str, Any]:
         return {
@@ -150,6 +195,10 @@ class SensorConfig:
             "unit": self.unit,
             "nominal": self.nominal,
             "tolerance": self.tolerance.as_dict(),
+            "tolerance_kind": self.tolerance_kind,
+            "limit_word": self.limit_word,
+            "display": self.display.as_dict() if self.display else None,
+            "spec": self.spec.public() if self.spec else None,
             "fixture": self.fixture,
             "source": self.source_type,
             "settings": {name: spec.public() for name, spec in self.settings.items()},
@@ -269,6 +318,25 @@ def _parse_setting(name: str, raw: Any) -> SettingSpec:
     )
 
 
+def _parse_display(raw: Any, unit: str, kind: str, where: str) -> Display | None:
+    """``display: mm`` (or {unit: mm, decimals: 4}) shows positions in millimetres; the signal stays in µm."""
+    if raw is None:
+        return Display() if kind == "measuring_range" and unit == "µm" else None
+    if raw is False or str(raw).strip().lower() in ("none", "off", "false", "no"):
+        return None
+    settings = {"unit": raw} if isinstance(raw, str) else dict(raw) if isinstance(raw, dict) else None
+    if settings is None:
+        raise ConfigError(f"{where}.display must be mm or a mapping like {{unit: mm, decimals: 4}}")
+    if str(settings.get("unit", "mm")).strip().lower() != "mm":
+        raise ConfigError(f"{where}.display.unit: only mm is supported")
+    if unit != "µm":
+        raise ConfigError(f"{where}.display needs the sensor's unit to be µm, not {unit!r}")
+    decimals = int(_as_float(settings.get("decimals", Display.decimals), f"{where}.display.decimals"))
+    if not 0 <= decimals <= 6:
+        raise ConfigError(f"{where}.display.decimals must be between 0 and 6")
+    return Display(decimals=decimals)
+
+
 def _parse_sensor(raw: dict[str, Any], index: int, source_override: str) -> SensorConfig:
     where = f"sensors[{index}]"
     if not isinstance(raw, dict):
@@ -276,30 +344,82 @@ def _parse_sensor(raw: dict[str, Any], index: int, source_override: str) -> Sens
     sensor_id = str(raw.get("id", "")).strip()
     if not sensor_id:
         raise ConfigError(f"{where}.id is required")
-    tol_raw = raw.get("tolerance") or {}
-    tolerance = Tolerance(
-        low=_as_float(tol_raw.get("low", -50.0), f"{where}.tolerance.low"),
-        high=_as_float(tol_raw.get("high", 50.0), f"{where}.tolerance.high"),
-    )
-    if tolerance.low >= tolerance.high:
-        raise ConfigError(f"{where}.tolerance.low must be below tolerance.high")
+    model = str(raw.get("model", "unknown model"))
+    unit = str(raw.get("unit", "µm"))
+
+    # The data sheet: named in "spec", or recognised from the model text (optoNCDT ILD5500-10 and so on).
+    spec_name = raw.get("spec")
+    if spec_name is not None:
+        spec = find_spec(str(spec_name))
+        if spec is None:
+            raise ConfigError(f"{where}.spec {spec_name!r} is not a known model; use one of: {known_models()}")
+    else:
+        spec = find_spec(model)
+
+    tol_raw = raw.get("tolerance")
+    tolerance_kind = "part"
+    if isinstance(tol_raw, str):
+        word = tol_raw.strip().lower().replace(" ", "_").replace("-", "_")
+        if word not in ("measuring_range", "range"):
+            raise ConfigError(f"{where}.tolerance must be {{low: .., high: ..}} or measuring_range, got {tol_raw!r}")
+        if spec is None:
+            raise ConfigError(f"{where}.tolerance: measuring_range needs a known sensor model. Put the model "
+                              f"from the sensor label into 'model' (known: {known_models()}).")
+        if unit != "µm":
+            raise ConfigError(f"{where}.tolerance: measuring_range needs the unit µm, not {unit!r}")
+        tolerance = Tolerance(low=spec.low_um, high=spec.high_um)
+        tolerance_kind = "measuring_range"
+    else:
+        tol_raw = tol_raw or {}
+        tolerance = Tolerance(
+            low=_as_float(tol_raw.get("low", -50.0), f"{where}.tolerance.low"),
+            high=_as_float(tol_raw.get("high", 50.0), f"{where}.tolerance.high"),
+        )
+        if tolerance.low >= tolerance.high:
+            raise ConfigError(f"{where}.tolerance.low must be below tolerance.high")
+
+    nominal_raw = raw.get("nominal", 0.0)
+    if isinstance(nominal_raw, str) and nominal_raw.strip().lower() == "auto":
+        nominal = spec.mid_um if tolerance_kind == "measuring_range" and spec else (tolerance.low + tolerance.high) / 2
+    else:
+        nominal = _as_float(nominal_raw, f"{where}.nominal")
+
     source = {key: expand_env(value, f"{where}.source.{key}")
               for key, value in dict(raw.get("source") or {"type": "simulator"}).items()}
     if source_override:
         source["type"] = source_override
     if source.get("type", "simulator") not in SOURCE_TYPES:
         raise ConfigError(f"{where}.source.type must be one of {', '.join(SOURCE_TYPES)}")
+    if source.get("type") == "ild5500" and spec is not None:
+        given = source.get("range_mm")
+        if given not in (None, "") and str(given).strip() != str(int(spec.measuring_range_mm)):
+            log.warning("%s: source.range_mm %s does not match %s (%g mm); the model decides", where, given,
+                        spec.model, spec.measuring_range_mm)
+        source["range_mm"] = int(spec.measuring_range_mm)
+        if tolerance_kind == "measuring_range":
+            reference = str(source.get("reference_mm", "range_start")).strip().lower()
+            if reference != "range_start":
+                raise ConfigError(f"{where}.tolerance: measuring_range counts from the start of the measuring "
+                                  f"range, so source.reference_mm must be range_start (it is {reference!r})")
+            source["reference_mm"] = "range_start"
+            if str(source.get("invert", False)).strip().lower() in ("1", "true", "yes", "on"):
+                raise ConfigError(f"{where}.tolerance: measuring_range cannot be combined with source.invert: "
+                                  "the readings are distances from the start of the range")
+
     settings_raw = raw.get("settings") or {}
     return SensorConfig(
         id=sensor_id,
         name=str(raw.get("name", sensor_id)),
-        model=str(raw.get("model", "unknown model")),
-        unit=str(raw.get("unit", "µm")),
-        nominal=_as_float(raw.get("nominal", 0.0), f"{where}.nominal"),
+        model=model,
+        unit=unit,
+        nominal=nominal,
         tolerance=tolerance,
         fixture=str(raw.get("fixture", "default")),
         source=source,
         settings={name: _parse_setting(name, value) for name, value in settings_raw.items()},
+        spec=spec,
+        display=_parse_display(raw.get("display"), unit, tolerance_kind, where),
+        tolerance_kind=tolerance_kind,
     )
 
 

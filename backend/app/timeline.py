@@ -115,6 +115,7 @@ def range_data(engine: Engine, sid: str, t0: float, t1: float, points: int = 160
     return {
         "view": "shift", "sensor": sid, "name": cfg.name, "unit": cfg.unit,
         "tolerance": cfg.tolerance.as_dict(), "nominal": cfg.nominal,
+        "display": cfg.display.as_dict() if cfg.display else None, "limit_word": cfg.limit_word,
         "t0": round(t0, 3), "t1": round(t1, 3), "t_now": round(t_last, 3),
         "oldest": round(oldest, 1), "fast_start": round(fast_start, 3),
         "t": [round(float(x), 4) for x in env["t"]], "v": to_json_list(env["v"], 3),
@@ -140,7 +141,8 @@ def shift(engine: Engine, sid: str, points: int = 1800) -> dict[str, Any]:
     now = engine.buffers[sid].t_last or time.time()
     start = now - engine.settings.engine.slow_buffer_s
     data = range_data(engine, sid, start, now, points)
-    name = engine.settings.sensor(sid).name
+    cfg = engine.settings.sensor(sid)
+    name = cfg.name
     line_events = engine.all_events(since=start)
     events = engine.all_events(since=start, sensor=sid)  # this sensor's own, and knocks it shared
     hours = (now - max(start, data["oldest"])) / 3600.0
@@ -153,11 +155,12 @@ def shift(engine: Engine, sid: str, points: int = 1800) -> dict[str, Any]:
         intro = (f"Over the last {hours:.0f} hours there were {len(line_events)} alerts on this line; "
                  f"{len(events)} of them involved {name}.")
     if share is not None:
+        stayed = "inside its measuring range" if cfg.tolerance_kind == "measuring_range" else "in tolerance"
         if share >= 1.0:
-            intro += f" {name} stayed in tolerance the whole time."
+            intro += f" {name} stayed {stayed} the whole time."
         else:
             pct = "more than 99.9" if share > 0.999 else f"{share * 100:.1f}"
-            intro += f" {name} stayed in tolerance {pct}% of the time."
+            intro += f" {name} stayed {stayed} {pct}% of the time."
     steps.append({"text": intro, "anchor": {"type": "zoom", "t0": start, "t1": now}})
 
     # pick a few incidents worth showing: the worst drift, one knock, the signal loss
@@ -171,11 +174,16 @@ def shift(engine: Engine, sid: str, points: int = 1800) -> dict[str, Any]:
         text = f"At {clock(e['t'])}: {e['summary']}"
         if e["kind"] == "vibration":
             text += " Zoomed in this far, every single reading is visible: the fixture ringing."
+        label = KIND_WORD.get(e["kind"], e["kind"])
+        if e["kind"] == "out_of_range" and cfg.tolerance_kind == "measuring_range":
+            label = "out of measuring range"
         steps.append({"text": text, "anchor": {"type": "zoom", "t0": e["t"] - before, "t1": e["t"] + after,
-                                               "label": KIND_WORD.get(e["kind"], e["kind"])}})
+                                               "label": label}})
     unsettled = [engine.settings.sensor(s).name for s in engine.buffers if engine.sensor_state(s) != "ok"]
+    by_range = all(engine.settings.sensor(x).tolerance_kind == "measuring_range" for x in engine.buffers)
+    calm = "every target is inside its measuring range" if by_range else "everything is in tolerance"
     closing = (f"These are the last ten minutes. Right now {', '.join(unsettled)} needs attention."
-               if unsettled else "These are the last ten minutes: right now everything is in tolerance.")
+               if unsettled else f"These are the last ten minutes: right now {calm}.")
     steps.append({"text": closing, "anchor": {"type": "zoom", "t0": now - 600, "t1": now}})
     data["insights"] = steps
     data["shift_start"] = round(start, 1)

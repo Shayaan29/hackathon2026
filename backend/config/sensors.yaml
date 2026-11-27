@@ -27,7 +27,7 @@ engine:
 sensors:
   - id: s1
     name: "Sensor 1"
-    model: "optoNCDT ILD5500-50 (simulated)"  # REPLACE: real model from the sensor label
+    model: "optoNCDT 5500 (simulated)"  # REPLACE: real model from the sensor label
     unit: "µm"
     nominal: 0.0
     tolerance: { low: -40.0, high: 40.0 }   # REPLACE: your tolerance band
@@ -62,7 +62,7 @@ sensors:
 
   - id: s2
     name: "Sensor 2"
-    model: "optoNCDT ILD5500-50 (simulated)"  # REPLACE
+    model: "optoNCDT 5500 (simulated)"  # REPLACE
     unit: "µm"
     nominal: 0.0
     tolerance: { low: -40.0, high: 40.0 }   # REPLACE

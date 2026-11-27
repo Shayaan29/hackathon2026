@@ -20,7 +20,7 @@ import numpy as np
 
 from .analysis import robust_sigma, to_json_list
 from .engine import Engine
-from .insights import clock, fmt, samples, signed, step, window_words
+from .insights import clock, fmt, measuring, samples, signed, step, window_words
 
 CHARTS = ("histogram", "boxplot", "scatter", "bar")
 GROUPS = {"minute": 60.0, "10min": 600.0, "hour": 3600.0}
@@ -66,35 +66,59 @@ def histogram(engine: Engine, ids: list[str], window_s: float = 300.0, bins: int
             "p05": round(float(np.percentile(v, 5)), 3), "p95": round(float(np.percentile(v, 95)), 3),
             "tolerance": tol.as_dict(), "cp": round(cp, 2), "cpk": round(cpk, 2),
             "outside": int(outside.sum()), "worst": None if worst is None else round(worst, 3),
+            "display": cfg.display.as_dict() if cfg.display else None, "limit_word": cfg.limit_word,
+            "capability": not measuring(cfg),   # Cp and Cpk judge a part's tolerance, not a sensor's range
         })
     steps = []
     if series:
         s = series[0]
+        cfg = engine.settings.sensor(s["sensor"])
         u = s["unit"]
         steps.append(step(f"These are {s['n']:,} {per} of {s['name']} from {window_words(window_s)}. "
-                          f"Nine in ten fall between {signed(s['p05'])} and {signed(s['p95'])} {u}.",
+                          f"Nine in ten fall between {cfg.pos(s['p05'])} and {cfg.pos(s['p95'])}.",
                           {"type": "xspan", "x0": s["p05"], "x1": s["p95"], "label": "9 in 10 readings"}))
-        off = s["mean"] - s["nominal"]
-        steps.append(step(f"The average is {signed(s['mean'], 2)} {u}, {fmt(abs(off), 2)} {u} "
-                          f"{'above' if off >= 0 else 'below'} the nominal value.",
-                          {"type": "x", "x": s["mean"], "label": "average"}))
         width = s["tolerance"]["high"] - s["tolerance"]["low"]
-        used = 6 * s["std"] / width * 100 if width else 0
         spread = {"type": "xspan", "x0": s["mean"] - 3 * s["std"], "x1": s["mean"] + 3 * s["std"], "label": "±3σ"}
-        if not s["outside"]:
-            steps.append(step(f"The spread uses {fmt(used, 1)}% of the tolerance band. Cpk is {fmt(s['cpk'], 1)}, "
-                              f"so this measurement is {_verdict(s['cpk'])} for this tolerance.", spread))
+        if measuring(cfg):
+            # a sensor's measuring range is not a part's tolerance: no Cp or Cpk, only where the readings sit
+            into = (s["mean"] - s["tolerance"]["low"]) / width * 100 if width else 0.0
+            steps.append(step(f"The average is {cfg.pos(s['mean'])}, {fmt(into, 0)}% of the way into the "
+                              f"{cfg.spec.range_text} measuring range.",
+                              {"type": "x", "x": s["mean"], "label": "average"}))
+            noise = 3 * s["std"]
+            steps.append(step(f"Almost all readings lie within {fmt(noise, 2 if noise < 1 else 1)} {u} of the average "
+                              "(three standard deviations).", spread))
+            if s["outside"]:
+                tol_d = s["tolerance"]
+                limit = tol_d["high"] if s["worst"] > tol_d["high"] else tol_d["low"]
+                share = s["outside"] / s["n"] * 100
+                share_words = f"{fmt(share, 1)}%" if share >= 0.1 else "less than 0.1%"
+                steps.append(step(f"But {s['outside']:,} {per}, {share_words}, were outside the measuring range, up to "
+                                  f"{cfg.pos(s['worst'])}. The sensor still measures there (extended range "
+                                  f"{cfg.spec.extended_text}), but the data sheet accuracy only holds inside "
+                                  f"{cfg.spec.range_text}.",
+                                  {"type": "xspan", "x0": min(limit, s["worst"]), "x1": max(limit, s["worst"]),
+                                   "label": "outside measuring range"}))
         else:
-            tol_d = s["tolerance"]
-            limit = tol_d["high"] if s["worst"] > tol_d["high"] else tol_d["low"]
-            share = s["outside"] / s["n"] * 100
-            share_words = f"{fmt(share, 1)}%" if share >= 0.1 else "less than 0.1%"
-            steps.append(step(f"The spread uses {fmt(used, 1)}% of the tolerance band, and Cpk is {fmt(s['cpk'], 1)}.",
-                              spread))
-            steps.append(step(f"But {s['outside']:,} {per}, {share_words}, were outside the tolerance, up to "
-                              f"{signed(s['worst'])} {u}. Cpk alone would hide them, so find out what caused them.",
-                              {"type": "xspan", "x0": min(limit, s["worst"]), "x1": max(limit, s["worst"]),
-                               "label": "outside tolerance"}))
+            off = s["mean"] - s["nominal"]
+            steps.append(step(f"The average is {signed(s['mean'], 2)} {u}, {fmt(abs(off), 2)} {u} "
+                              f"{'above' if off >= 0 else 'below'} the nominal value.",
+                              {"type": "x", "x": s["mean"], "label": "average"}))
+            used = 6 * s["std"] / width * 100 if width else 0
+            if not s["outside"]:
+                steps.append(step(f"The spread uses {fmt(used, 1)}% of the tolerance band. Cpk is {fmt(s['cpk'], 1)}, "
+                                  f"so this measurement is {_verdict(s['cpk'])} for this tolerance.", spread))
+            else:
+                tol_d = s["tolerance"]
+                limit = tol_d["high"] if s["worst"] > tol_d["high"] else tol_d["low"]
+                share = s["outside"] / s["n"] * 100
+                share_words = f"{fmt(share, 1)}%" if share >= 0.1 else "less than 0.1%"
+                steps.append(step(f"The spread uses {fmt(used, 1)}% of the tolerance band, and Cpk is {fmt(s['cpk'], 1)}.",
+                                  spread))
+                steps.append(step(f"But {s['outside']:,} {per}, {share_words}, were outside the tolerance, up to "
+                                  f"{signed(s['worst'])} {u}. Cpk alone would hide them, so find out what caused them.",
+                                  {"type": "xspan", "x0": min(limit, s["worst"]), "x1": max(limit, s["worst"]),
+                                   "label": "outside tolerance"}))
         if len(series) > 1:
             wide = max(series, key=lambda x: x["std"])
             narrow = min(series, key=lambda x: x["std"])
@@ -168,11 +192,13 @@ def boxplot(engine: Engine, ids: list[str], window_s: float = 3600.0, group_by: 
                           {"type": "category", "index": wild, "label": "most unsettled"}))
         medians = [b[2] for b in boxes]
         typical = float(np.median([b[3] - b[1] for b in boxes])) or 1e-9
-        if abs(medians[-1] - medians[0]) > 2 * typical:
-            steps.append(step(f"The middle value moved from {signed(medians[0])} to {signed(medians[-1])} {unit} "
+        if group_by != "sensor" and abs(medians[-1] - medians[0]) > 2 * typical:
+            cfg0 = engine.settings.sensor(ids[0])
+            steps.append(step(f"The middle value moved from {cfg0.pos(medians[0])} to {cfg0.pos(medians[-1])} "
                               "over this time.", None))
+    first = engine.settings.sensor(ids[0])
     return {"view": "boxplot", "chart": "boxplot", "window_s": window_s, "group_by": group_by, "per": per,
-            "unit": unit, "sensors": ids, "categories": categories, "boxes": boxes, "counts": counts,
+            "unit": unit, "display": first.display.as_dict() if first.display else None, "sensors": ids, "categories": categories, "boxes": boxes, "counts": counts,
             "insights": steps}
 
 
@@ -298,7 +324,8 @@ def scatter(engine: Engine, ids: list[str], window_s: float = 60.0, max_points: 
         if highlight:
             steps.append(step(_knock_text(highlight, ca.name, cb.name), highlight["line"]))
     return {"view": "scatter", "chart": "scatter", "window_s": window_s,
-            "x": {"sensor": a, "name": ca.name, "unit": ca.unit}, "y": {"sensor": b, "name": cb.name, "unit": cb.unit},
+            "x": {"sensor": a, "name": ca.name, "unit": ca.unit, "display": ca.display.as_dict() if ca.display else None},
+            "y": {"sensor": b, "name": cb.name, "unit": cb.unit, "display": cb.display.as_dict() if cb.display else None},
             "points": [[round(float(x), 3), round(float(y), 3)] for x, y in pts],
             "r": round(r, 3), "slope": round(float(slope), 4), "highlight": highlight, "insights": steps}
 
@@ -324,19 +351,26 @@ def bar(engine: Engine, ids: list[str], metric: str = "noise", window_s: float =
     shown_unit = "" if metric == "events" else f" {unit}"
     steps = []
     digits = 2 if metric != "events" else 0
+    # the average reading is a position: say it in the sensor's own unit (mm), noise and spread stay in µm
+    first = engine.settings.sensor(ids[0])
+    display = first.display if metric == "mean" else None
+
+    def show(i: int) -> str:
+        return first.display.text(values[i]) if display is not None else f"{fmt(values[i], digits)}{shown_unit}"
+
     if len(values) >= 2 and max(values) == min(values):
-        steps.append(step(f"All sensors have the same {words}: {fmt(values[0], digits)}{shown_unit}.", None))
+        steps.append(step(f"All sensors have the same {words}: {show(0)}.", None))
     elif len(values) >= 2:
         hi, lo = int(np.argmax(values)), int(np.argmin(values))
         most = "the most alerts" if metric == "events" else f"the highest {words}"
-        steps.append(step(f"{labels[hi]} has {most}: {fmt(values[hi], digits)}"
-                          f"{shown_unit}.", {"type": "category", "index": hi, "label": "highest"}))
+        steps.append(step(f"{labels[hi]} has {most}: {show(hi)}.", {"type": "category", "index": hi, "label": "highest"}))
         ratio = values[hi] / values[lo] if values[lo] else None
         tail = f", {fmt(ratio, 1)} times less" if ratio and metric != "mean" and ratio >= 1.2 else ""
         least = "the fewest" if metric == "events" else "the lowest"
-        steps.append(step(f"{labels[lo]} has {least}: {fmt(values[lo], digits)}{shown_unit}{tail}.",
+        steps.append(step(f"{labels[lo]} has {least}: {show(lo)}{tail}.",
                           {"type": "category", "index": lo, "label": "lowest"}))
     return {"view": "bar", "chart": "bar", "metric": metric, "window_s": window_s, "unit": unit if metric != "events" else "",
+            "display": display.as_dict() if display is not None else None,
             "categories": labels, "values": values, "label": words, "insights": steps}
 
 

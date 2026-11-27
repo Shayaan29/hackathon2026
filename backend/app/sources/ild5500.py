@@ -12,15 +12,22 @@ stream, no vendor driver needed. The format is the one of the operating instruct
 With only the distance (DIST1) selected, a frame is one int32: millimetres = value / 1 000 000. Values above
 0x7FFFFEFF are status codes (no target, outside the measuring range, laser off, ...) and become invalid readings.
 
+DIST1 is counted from the start of the measuring range (SMR): 0 mm at SMR, the measuring range in mm at its end
+(EMR), negative or larger inside the extended measuring range. That is how the manual defines the distance for
+the RS422 output (table 8.1, page 62), and the Ethernet range allows negative values (table 9.1, page 66).
+
 Configuration in a sensors file (see config/sensors.live.yaml):
 
     source:
       type: ild5500
       host: ${LIVE_SENSOR_HOST:-169.254.168.150}   # factory IP address of the sensor
       port: ${LIVE_SENSOR_PORT:-1024}               # the port set under "Server TCP/IP"
-      reference_mm: auto      # auto = the first second of readings is zero; mid = middle of the measuring
-                              # range of 'range_mm'; or a distance in mm that is zero
-      range_mm: 50            # model ILD5500-50 (10, 25, 50, 100 or 200), used by reference_mm: mid
+      reference_mm: range_start  # what is zero. range_start = the start of the measuring range: the cockpit then
+                              # shows the distance exactly as the sensor's web page does (0 to 10 mm for a -10).
+                              # auto = the first second of readings is zero (shows only changes);
+                              # mid = the middle of the measuring range; or a distance in mm that is zero
+      range_mm: 10            # model ILD5500-10 (10, 25, 50, 100 or 200), used by reference_mm: mid; the model
+                              # in the sensor file sets it automatically
       sensor_rate_hz: auto    # measuring rate of the sensor; auto = measured from the stream
       signals: [DIST1]        # the signals ticked in the sensor's Ethernet data output
       invert: false           # true turns the sign (a target moving away becomes negative)
@@ -72,8 +79,13 @@ STATUS_TEXT = {
     0x7FFFFF09: "peak too wide: surface or light problem",
     0x7FFFFF0A: "laser is off",
 }
-# start and end of the standard measuring range in mm, per model (operating instructions, chapter 3.4)
-MODEL_RANGE_MM = {10: (30.0, 40.0), 25: (40.0, 65.0), 50: (45.0, 95.0), 100: (70.0, 170.0), 200: (100.0, 300.0)}
+# which status code means what, in the words the invalid alert uses (table 9.1, page 66)
+STATUS_REASON = {
+    0x7FFFFF04: "no_peak", 0x7FFFFF05: "before_range", 0x7FFFFF06: "after_range",
+    0x7FFFFF08: "cannot_evaluate", 0x7FFFFF09: "peak_too_wide", 0x7FFFFF0A: "laser_off",
+}
+REASON_WINDOW_S = 2.0                       # the invalid readings of this long are summed up by reason
+MODEL_RANGES_MM = (10, 25, 50, 100, 200)    # measuring ranges of the family (operating instructions, chapter 3.4)
 
 
 def normalise_signals(names: Any) -> list[str]:
@@ -213,22 +225,23 @@ class Ild5500Source(SensorSource):
         self.signals = normalise_signals(opts.get("signals"))
         self.invert = str(opts.get("invert", False)).lower() in ("1", "true", "yes", "on")
         try:
-            self.range_mm = int(opts.get("range_mm", 50))
+            self.range_mm = int(opts.get("range_mm", 10))
         except (TypeError, ValueError) as exc:
-            raise SourceError(f"{cfg.id}: source.range_mm must be one of {sorted(MODEL_RANGE_MM)}") from exc
-        ref = str(opts.get("reference_mm", "auto")).strip().lower()
+            raise SourceError(f"{cfg.id}: source.range_mm must be one of {list(MODEL_RANGES_MM)}") from exc
+        ref = str(opts.get("reference_mm", "range_start")).strip().lower()
         self._config_ref: float | None = None
-        self.ref_mode = ref if ref in ("auto", "mid") else "fixed"
+        self.ref_mode = ref if ref in ("auto", "mid", "range_start") else "fixed"
         if self.ref_mode == "fixed":
             try:
                 self._config_ref = float(ref)
             except ValueError as exc:
-                raise SourceError(f"{cfg.id}: source.reference_mm must be auto, mid or a number") from exc
+                raise SourceError(f"{cfg.id}: source.reference_mm must be range_start, auto, mid or a number") from exc
+        elif self.ref_mode == "range_start":
+            self._config_ref = 0.0                      # DIST1 already counts from the start of the range
         elif self.ref_mode == "mid":
-            if self.range_mm not in MODEL_RANGE_MM:
-                raise SourceError(f"{cfg.id}: source.range_mm must be one of {sorted(MODEL_RANGE_MM)}")
-            lo, hi = MODEL_RANGE_MM[self.range_mm]
-            self._config_ref = (lo + hi) / 2.0
+            if self.range_mm not in MODEL_RANGES_MM:
+                raise SourceError(f"{cfg.id}: source.range_mm must be one of {list(MODEL_RANGES_MM)}")
+            self._config_ref = self.range_mm / 2.0      # the middle of the range, counted from its start
 
         self._lock = threading.Lock()
         self._queue: deque[np.ndarray] = deque()
@@ -255,6 +268,7 @@ class Ild5500Source(SensorSource):
         self.samples = 0
         self.invalid = 0
         self.last_status: str | None = None
+        self._reasons: deque[tuple[float, dict[str, int]]] = deque()
         self.measured_rate: float | None = None
         self.intensity_percent: float | None = None
         self.temperature_c: float | None = None
@@ -359,6 +373,7 @@ class Ild5500Source(SensorSource):
         self.invalid += int(np.isnan(mm).sum())
         if code is not None:
             self.last_status = STATUS_TEXT.get(code, f"status code 0x{code:08X}")
+            self._note_reasons(now, block.frames[:, column])
         self._extras(block.frames, words)
         self._note_arrival(now, n)
         share = float(np.isfinite(mm).mean())
@@ -368,6 +383,34 @@ class Ild5500Source(SensorSource):
             self._set("streaming", f"Live from the sensor at {self.host}:{self.port}.")
         with self._lock:
             self._queue.append(mm)
+
+    def _note_reasons(self, now: float, counts: np.ndarray) -> None:
+        """Count the invalid readings of this block by reason, and forget what is older than the window."""
+        raw = np.asarray(counts, dtype=np.int64)
+        codes, found = np.unique(raw[raw > LAST_VALID], return_counts=True)
+        tally: dict[str, int] = {}
+        for code, number in zip(codes.tolist(), found.tolist()):
+            key = STATUS_REASON.get(int(code), "other")
+            tally[key] = tally.get(key, 0) + int(number)
+        with self._lock:                            # the status is read from another thread
+            self._reasons.append((now, tally))
+            while self._reasons and now - self._reasons[0][0] > REASON_WINDOW_S:
+                self._reasons.popleft()
+
+    def invalid_reasons(self) -> dict[str, float] | None:
+        """Share of each reason among the invalid readings of the last two seconds, or None when there were none."""
+        horizon = time.monotonic() - REASON_WINDOW_S
+        total: dict[str, int] = {}
+        with self._lock:
+            held = list(self._reasons)
+        for stamp, tally in held:
+            if stamp >= horizon:
+                for key, number in tally.items():
+                    total[key] = total.get(key, 0) + number
+        everything = sum(total.values())
+        if not everything:
+            return None
+        return {key: round(number / everything, 3) for key, number in total.items()}
 
     def _extras(self, frames: np.ndarray, words: int) -> None:
         """Optional values when ticked in the sensor: reflectance (INTENSITY) and temperature."""
@@ -442,6 +485,8 @@ class Ild5500Source(SensorSource):
             "article": self.article, "serial": self.serial, "samples": self.samples,
             "invalid_percent": round(share * 100, 1) if share is not None else None,
             "last_status": self.last_status,
+            "invalid_reasons": self.invalid_reasons(),
+            "reference": self.ref_mode,
             "reference_mm": round(self.ref_mm, 4) if self.ref_mm is not None else None,
             "intensity_percent": self.intensity_percent,
             "temperature_c": self.temperature_c,

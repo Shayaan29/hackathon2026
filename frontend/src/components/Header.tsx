@@ -39,9 +39,14 @@ function Health() {
   }
   if (!problems.length) {
     const isLive = sensors.some((s) => status?.sensors[s.id]?.live?.state === "streaming");
+    // a sensor with a data sheet is judged by its measuring range, a part by its tolerance
+    const byRange = sensors.length > 0 && sensors.every((s) => s.tolerance_kind === "measuring_range");
+    const okText = byRange
+      ? (sensors.length === 1 ? "Target in measuring range" : `All ${sensors.length} targets in measuring range`)
+      : (sensors.length === 1 ? "Sensor in tolerance" : `All ${sensors.length} sensors in tolerance`);
     return (
       <div className="health health-ok"><span />
-        {sensors.length === 1 ? "Sensor in tolerance" : `All ${sensors.length} sensors in tolerance`}
+        {okText}
         {fallback ? " (simulated data)" : isLive ? " (live data)" : ""}
       </div>
     );

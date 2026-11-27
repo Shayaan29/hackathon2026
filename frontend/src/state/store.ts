@@ -94,7 +94,7 @@ interface CockpitStore {
   feed: FeedItem[];
   reportId: string | null;
   assistantFor: string | null;
-  hints: Record<string, "ok" | "improve">;
+  hints: Record<string, "ok" | "improve" | "advice">;
   lastShake: ShakeInfo | null;
   /** the recording sheet and the incident list */
   recordingOpen: boolean;

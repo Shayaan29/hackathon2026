@@ -35,13 +35,16 @@ Status once per second:
 ```json
 "live": {"kind": "ild5500", "state": "streaming", "message": "", "host": "169.254.168.150", "port": 1024,
          "rate_hz": 20000, "article": 4120118, "serial": 12345678, "samples": 181232, "invalid_percent": 0.0,
-         "last_status": null, "reference_mm": 71.2345, "intensity_percent": null, "temperature_c": null}
+         "last_status": null, "invalid_reasons": null, "reference": "range_start", "reference_mm": 30.0,
+         "intensity_percent": null, "temperature_c": null}
 ```
 
 `state` is `offline` (cannot connect; `message` says why in plain words), `no_data` (connected, nothing arrives),
 `streaming` (valid readings arrive) or `invalid` (readings arrive but most are invalid; `last_status` is the sensor's
-own status text, for example "no peak"). `rate_hz` is the rate measured from the stream, `reference_mm` the distance
-taken as zero, and `intensity_percent` and `temperature_c` are filled when the sensor sends those signals.
+own status text, for example "no peak"). `rate_hz` is the rate measured from the stream, `reference` says what is
+zero (`range_start`, `auto`, `mid` or `fixed`), `reference_mm` the distance taken as zero, `invalid_reasons` the share
+of each reason among the invalid readings of the last two seconds (for example `{"no_peak": 0.9, "after_range": 0.1}`; the keys are `no_peak`, `before_range`, `after_range`,
+`cannot_evaluate`, `peak_too_wide`, `laser_off` and `other`; `null` when there were none) and `intensity_percent` and `temperature_c` are filled when the sensor sends those signals.
 A live sensor never falls back to simulated data: when it is not connected no new samples arrive and
 `live.state` says why. Readings the sensor itself marks as invalid (no target, out of range) arrive as `null`.
 
@@ -194,6 +197,56 @@ history (`"historic": true` on those events); real sources start empty.
 | `list_incidents` | backend | none | `{"ok", "available", "total", "incidents", "recording"}`, see below |
 | `investigate_incident` | backend (cockpit opens the incident) | `incident_id` (optional, default the first) | `{"ok", "speak_rule", "incident", "recommendations"}`, or `{"ok": false, "error"}` |
 | `search_manual` | backend (cockpit shows the passages) | `query` | `{"ok", "speak_rule", "query", "documents", "passages", "message"}`, see the tool table below. Needs the cockpit token |
+
+## Added for sensors with a data sheet (measuring range, millimetres)
+
+A sensor whose `model` is in the catalogue (`backend/app/sensor_specs.py`, today the optoNCDT ILD5500-10, -25,
+-50, -100 and -200) has a data sheet. Every value in it carries the page of the operating instructions it comes from.
+The signal itself stays in the unit of the sensor (`µm`, counted from the start of the measuring range); only the
+wording changes.
+
+`/api/config` sensors gain:
+
+| Field | Meaning |
+| --- | --- |
+| `tolerance_kind` | `part` (the limits are a workpiece tolerance typed into the YAML) or `measuring_range` (the limits are the measuring range of the model) |
+| `limit_word` | `tolerance` or `measuring range`, the word the interface and the reports use for the limits |
+| `display` | `{"unit": "mm", "scale": 0.001, "decimals": 4}` or `null`. A position `v` in the payload is shown as `v * scale` in `unit`. Rates (noise, vibration, drift per minute) stay in µm |
+| `spec` | `null` without a data sheet, otherwise the object below |
+
+```json
+"spec": {"family": "optoNCDT 5500", "model": "ILD5500-10", "title": "optoNCDT ILD5500-10",
+         "measuring_range_mm": 10, "start_mm": 30, "mid_mm": 35, "end_mm": 40,
+         "zones_um": {"ext_low": -2500.0, "low": 0.0, "mid": 5000.0, "high": 10000.0, "ext_high": 12500.0},
+         "linearity_um": 1.5, "repeatability_um": 0.008, "temperature_um_per_k": 0.8,
+         "manual": "optoNCDT 5500 operating instructions"}
+```
+
+`zones_um` are positions from the start of the measuring range: between `low` and `high` the target is in the
+measuring range (state LED green), between `ext_low` and `low` or `high` and `ext_high` it is still measured but in the
+extended range (LED flashing green), beyond that it is outside (LED red). `start_mm`, `mid_mm` and `end_mm` are the
+distances from the sensor housing. For `tolerance_kind` `measuring_range` the sensor's `tolerance` is `low` 0 and
+`high` the measuring range in µm, and `nominal` is its middle.
+
+The results of `/api/history` (each series), `/api/drift`, `/api/range`, `/api/shift`, `/api/explore` (histogram,
+box plot, scatter and bar) and the report charts carry the `display` of their sensor(s), and `limit_word` where a text
+needs it (`display` is `null` for a sensor shown in its own unit). A histogram series has `capability: false` for a
+measuring range, because Cp and Cpk describe a part tolerance. The explanation steps and the shift tour say
+"measuring range" instead of "tolerance" for such a sensor.
+
+An `out_of_range` event of such a sensor has extra `numbers`: `zone` (`before`, `after` or `outside`), `led`, `range`
+(`"0 to 10 mm"`) and `extended_range` (`"-2.5 to 12.5 mm"`). Its summary names where the target is and which range
+it left.
+
+`GET /api/assistant/{sensor}` for a sensor with a data sheet and no `settings` block cannot propose values, because
+the cockpit does not change the sensor's own settings. It answers with `"status": "advice"` (besides `ok` and
+`improve`), `basis` (what the noise was compared with, for example `"Data sheet linearity (±1.5 µm)"`), `proposal` an
+empty list and `reasons` the things to check, each with its manual page.
+
+`GET /api/reports/{event_id}` gains `datasheet`: `{"title", "manual", "rows": [{"label", "value", "page"}]}` (or `null`),
+and each entry of `sensors` gains `display` and `limit_word`. The title says "Out of measuring range" for such a sensor,
+"Out of tolerance" for a part tolerance. The ticket text names the sensor, its range and linearity with the manual page.
+
 
 ## Added for recordings and incidents
 

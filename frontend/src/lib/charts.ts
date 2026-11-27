@@ -16,7 +16,8 @@ import type {
   Anchor, BarData, BoxplotData, CockpitEvent, DriftData, HistogramData, HistoryData, InsightStep, RangeData,
   IncidentChartData, ScatterData, Series, Severity, SpectrumData, Tolerance, ViewData,
 } from "../types";
-import { KIND_LABEL, recordingClock, relSeconds } from "./format";
+import { KIND_LABEL, KIND_SHORT, recordingClock, relSeconds } from "./format";
+import { axisFormatter, limitLabel, nearLimit, pos, posUnit, shownOf, type Shown } from "./units";
 
 echarts.use([
   LineChart,
@@ -81,7 +82,7 @@ function hexToRgba(hex: string, alpha: number): string {
 
 setChartTheme(false);
 
-function tooltip(unit: string): Record<string, unknown> {
+function tooltip(unit: string, shown?: Shown): Record<string, unknown> {
   return {
     trigger: "axis",
     backgroundColor: THEME.tipBg,
@@ -96,13 +97,14 @@ function tooltip(unit: string): Record<string, unknown> {
       }[];
       const visible = list.filter((p) => !p.seriesName.startsWith(HIDDEN) && p.value?.[1] !== null);
       if (!visible.length) return "";
-      const rows = visible.map((p) => `${p.marker}${p.seriesName}: <b>${Number(p.value[1]).toFixed(2)}</b> ${unit}`);
+      const text = (v: number) => (shown?.display ? pos(v, shown) : v.toFixed(2));
+      const rows = visible.map((p) => `${p.marker}${p.seriesName}: <b>${text(Number(p.value[1]))}</b> ${shown ? shown.unit : unit}`);
       return rows.join("<br/>");
     },
   };
 }
 
-function base(unit: string): ChartOption {
+function base(unit: string, shown?: Shown): ChartOption {
   return {
     backgroundColor: "transparent",
     textStyle: { color: COLORS.text, fontFamily: FONT },
@@ -110,7 +112,7 @@ function base(unit: string): ChartOption {
     animationDuration: 900,
     animationEasing: "cubicOut",
     animationDurationUpdate: 300,
-    tooltip: tooltip(unit),
+    tooltip: tooltip(unit, shown),
   };
 }
 
@@ -149,15 +151,20 @@ function valueAxis(extra: Record<string, unknown> = {}): Record<string, unknown>
   };
 }
 
+/** Tick labels in the sensor's own unit when it has one; the axis keeps the signal unit underneath. */
+function labelsIn(shown: Shown, step?: number): Record<string, unknown> {
+  const formatter = axisFormatter(shown, step);
+  return formatter ? { axisLabel: { color: COLORS.dim, fontSize: 11, formatter } } : {};
+}
+
 function glow(color: string, width = 1.6): Record<string, unknown> {
   return { color, width, shadowBlur: 10, shadowColor: color };
 }
 
-function toleranceMarks(tolerance: Tolerance, unit: string): Record<string, unknown>[] {
-  const label = (v: number) => `tol ${v > 0 ? "+" : ""}${v} ${unit}`;
+function toleranceMarks(tolerance: Tolerance, shown: Shown): Record<string, unknown>[] {
   return [
-    { yAxis: tolerance.high, label: { formatter: label(tolerance.high) } },
-    { yAxis: tolerance.low, label: { formatter: label(tolerance.low), position: "insideEndBottom" } },
+    { yAxis: tolerance.high, label: { formatter: limitLabel(tolerance.high, shown, "high") } },
+    { yAxis: tolerance.low, label: { formatter: limitLabel(tolerance.low, shown, "low"), position: "insideEndBottom" } },
   ];
 }
 
@@ -237,6 +244,7 @@ function traceSeries(s: Series, tNow: number, color: string, axis: number, extra
 /** Timeseries (one sensor) and compare (sensors stacked on one time axis). */
 export function historyOption(data: HistoryData): ChartOption {
   const unit = data.series[0]?.unit ?? "";
+  const shownFirst = shownOf(unit, data.series[0]?.display, data.series[0]?.limit_word);
   const n = Math.max(1, data.series.length);
   // Stacked grids for compare: percentages, since ECharts has no calc().
   const topPct = 5;
@@ -269,11 +277,10 @@ export function historyOption(data: HistoryData): ChartOption {
     });
 
     const [lo, hi] = extent(s.values);
-    // Show the tolerance band only when the signal gets at least halfway there;
-    // otherwise it would squash the trace into a flat line.
-    const mid = (s.tolerance.high + s.tolerance.low) / 2;
-    const nearLimit = hi >= mid + (s.tolerance.high - mid) / 2 || lo <= mid - (mid - s.tolerance.low) / 2;
-    const [yMin, yMax] = nearLimit
+    // Show the limits only when the signal gets near them; otherwise they would squash the trace into a flat line.
+    const shown = shownOf(s.unit, s.display, s.limit_word);
+    const near = nearLimit(s.tolerance, lo, hi, shown);
+    const [yMin, yMax] = near
       ? niceRange(Math.min(lo, s.tolerance.low), Math.max(hi, s.tolerance.high))
       : niceRange(lo, hi);
     yAxes.push(valueAxis({
@@ -281,6 +288,7 @@ export function historyOption(data: HistoryData): ChartOption {
       min: yMin,
       max: yMax,
       splitNumber: n > 1 ? 3 : 5,
+      ...labelsIn(shown, (yMax - yMin) / (n > 1 ? 3 : 5)),
       name: n > 1 ? s.name : "",
       nameLocation: "middle",
       nameGap: 48,
@@ -292,20 +300,20 @@ export function historyOption(data: HistoryData): ChartOption {
       (e) => e.kind !== "drift" && (e.sensor === s.sensor || e.related_sensors.includes(s.sensor)),
     );
     const extras: Record<string, unknown> = { markArea: eventAreas(mine, data.t_now, data.window_s) };
-    if (nearLimit) {
+    if (near) {
       extras.markLine = {
         silent: true,
         symbol: "none",
         lineStyle: { color: COLORS.red, type: "dashed", width: 1, opacity: 0.8 },
         label: { color: COLORS.red, fontSize: 10, position: "insideEndTop" },
-        data: toleranceMarks(s.tolerance, unit),
+        data: toleranceMarks(s.tolerance, shown),
       };
     }
     series.push(...traceSeries(s, data.t_now, color, index, extras));
   });
 
   return {
-    ...base(unit),
+    ...base(unit, shownFirst),
     grid: grids,
     xAxis: xAxes,
     yAxis: yAxes,
@@ -380,15 +388,19 @@ export function driftOption(data: DriftData): ChartOption {
   const history = data.t_rel.map((t, i) => [t === null ? null : t / 60, data.values[i]]);
   const forecast = data.forecast?.points.map(([t, v]) => [t / 60, v]) ?? [];
   const [lo, hi] = extent([...data.values, ...forecast.map((p) => p[1] as number)]);
-  const [yMin, yMax] = niceRange(Math.min(lo, data.tolerance.low), Math.max(hi, data.tolerance.high));
-  const minX = Math.min(-1, ...history.map((p) => (p[0] as number) ?? 0));
-  const maxX = forecast.length ? Math.max(1, forecast[forecast.length - 1][0] as number) : 1;
+  const shown = shownOf(data.unit, data.display, data.limit_word);
   const crossing = data.forecast?.crossing;
   const minutes = data.forecast?.minutes_to_limit;
-  const tolLabel = (v: number) => `tol ${v > 0 ? "+" : ""}${v} ${data.unit}`;
+  // A measuring range is far wider than a drift of a few µm: show its ends only when the target heads for one
+  const limits = !shown.measuring || Boolean(crossing) || nearLimit(data.tolerance, lo, hi, shown);
+  const [yMin, yMax] = limits
+    ? niceRange(Math.min(lo, data.tolerance.low), Math.max(hi, data.tolerance.high))
+    : niceRange(lo, hi);
+  const minX = Math.min(-1, ...history.map((p) => (p[0] as number) ?? 0));
+  const maxX = forecast.length ? Math.max(1, forecast[forecast.length - 1][0] as number) : 1;
 
   return {
-    ...base(data.unit),
+    ...base(data.unit, shown),
     grid: { left: 70, right: 36, top: 26, bottom: 40 },
     xAxis: {
       type: "value",
@@ -403,7 +415,7 @@ export function driftOption(data: DriftData): ChartOption {
         formatter: (v: number) => (v === 0 ? "now" : `${v > 0 ? "+" : "−"}${Math.abs(v)} min`),
       },
     },
-    yAxis: valueAxis({ min: yMin, max: yMax }),
+    yAxis: valueAxis({ min: yMin, max: yMax, ...labelsIn(shown, (yMax - yMin) / 5) }),
     series: [
       {
         type: "line",
@@ -417,10 +429,14 @@ export function driftOption(data: DriftData): ChartOption {
           symbol: "none",
           data: [
             { xAxis: 0, lineStyle: { color: THEME.nowLine, type: "solid", width: 1 }, label: { show: false } },
-            { yAxis: data.tolerance.high, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
-              label: { color: COLORS.red, fontSize: 10, position: "insideStartTop", formatter: tolLabel(data.tolerance.high) } },
-            { yAxis: data.tolerance.low, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
-              label: { color: COLORS.red, fontSize: 10, position: "insideStartBottom", formatter: tolLabel(data.tolerance.low) } },
+            ...(limits ? [
+              { yAxis: data.tolerance.high, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
+                label: { color: COLORS.red, fontSize: 10, position: "insideStartTop",
+                  formatter: limitLabel(data.tolerance.high, shown, "high") } },
+              { yAxis: data.tolerance.low, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
+                label: { color: COLORS.red, fontSize: 10, position: "insideStartBottom",
+                  formatter: limitLabel(data.tolerance.low, shown, "low") } },
+            ] : []),
           ],
         },
       },
@@ -473,6 +489,9 @@ function plainTooltip(): Record<string, unknown> {
 /** How readings are spread: a stepped area per sensor on a value axis. */
 export function histogramOption(data: HistogramData): ChartOption {
   const unit = data.series[0]?.unit ?? "";
+  const shown = shownOf(unit, data.series[0]?.display, data.series[0]?.limit_word);
+  const edges = data.series.flatMap((s) => [s.edges[0], s.edges[s.edges.length - 1]]);
+  const step = edges.length ? (Math.max(...edges) - Math.min(...edges)) / 6 : undefined;
   const series = data.series.map((s, i) => {
     const color = COLORS.series[i % COLORS.series.length];
     const centres = s.counts.map((c, k) => [(s.edges[k] + s.edges[k + 1]) / 2, c]);
@@ -489,38 +508,49 @@ export function histogramOption(data: HistogramData): ChartOption {
         symbol: "none", silent: true, animation: false,
         lineStyle: { color: COLORS.red, type: "dashed", width: 1.2 },
         label: { color: COLORS.red, fontSize: 10, position: "insideEndTop",
-          formatter: (p: { value: number }) => `tol ${p.value > 0 ? "+" : ""}${p.value} ${unit}` },
+          formatter: (p: { value: number }) => limitLabel(p.value, shown, p.value <= s.tolerance.low ? "low" : "high") },
         data: limits.map((v) => ({ xAxis: v })),
       } } : {}),
     };
   });
+  const tip = shown.display
+    ? { ...plainTooltip(), trigger: "axis", formatter: (params: { seriesName: string; value: [number, number] }[]) => {
+        const list = Array.isArray(params) ? params : [params];
+        if (!list.length) return "";
+        return `${posUnit(list[0].value[0], shown)}<br/>${list.map((p) => `${p.seriesName}: <b>${p.value[1]}</b> readings`).join("<br/>")}`;
+      } }
+    : { ...plainTooltip(), trigger: "axis" };
   return {
-    ...base(unit),
-    tooltip: { ...plainTooltip(), trigger: "axis" },
+    ...base(unit, shown),
+    tooltip: tip,
     legend: data.series.length > 1 ? { top: 0, right: 8, textStyle: { color: COLORS.text } } : undefined,
     grid: { left: 64, right: 26, top: 30, bottom: 38 },
-    xAxis: valueAxis({ scale: true, name: unit, nameLocation: "end", nameTextStyle: { color: COLORS.dim },
-      splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: COLORS.axis } } }),
+    xAxis: valueAxis({ scale: true, name: shown.unit, nameLocation: "end", nameTextStyle: { color: COLORS.dim },
+      splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: COLORS.axis } }, ...labelsIn(shown, step) }),
     yAxis: valueAxis({ name: "readings", nameTextStyle: { color: COLORS.dim } }),
     series,
   };
 }
 
 export function boxplotOption(data: BoxplotData): ChartOption {
+  const shown = shownOf(data.unit, data.display);
+  const at = (v: number) => (shown.display ? pos(v, shown) : signed(v, 2));
+  const all = data.boxes.flat();
+  const step = all.length ? (Math.max(...all) - Math.min(...all)) / 5 : undefined;
   return {
-    ...base(data.unit),
+    ...base(data.unit, shown),
     tooltip: {
       ...plainTooltip(),
       formatter: (p: { name: string; value: number[] }) => {
         const [, lo, q1, med, q3, hi] = p.value;
-        return `${p.name}<br/>median ${signed(med, 2)} ${data.unit}<br/>middle half ${signed(q1, 2)} to ${signed(q3, 2)}`
-          + `<br/>98% within ${signed(lo, 2)} to ${signed(hi, 2)}`;
+        return `${p.name}<br/>median ${at(med)} ${shown.unit}<br/>middle half ${at(q1)} to ${at(q3)}`
+          + `<br/>98% within ${at(lo)} to ${at(hi)}`;
       },
     },
     grid: { left: 64, right: 26, top: 24, bottom: 40 },
     xAxis: { type: "category", data: data.categories, axisLine: { lineStyle: { color: COLORS.axis } },
       axisTick: { show: false }, axisLabel: { color: COLORS.dim, fontSize: 12 } },
-    yAxis: valueAxis({ scale: true, name: data.unit, nameTextStyle: { color: COLORS.dim } }),
+    yAxis: valueAxis({ scale: true, name: shown.unit, nameTextStyle: { color: COLORS.dim }, ...labelsIn(shown, step) }),
     series: [{
       type: "boxplot", name: "spread", data: data.boxes, boxWidth: [8, 42],
       itemStyle: { color: hexToRgba(COLORS.cyan, 0.16), borderColor: COLORS.cyan, borderWidth: 1.6 },
@@ -530,14 +560,20 @@ export function boxplotOption(data: BoxplotData): ChartOption {
 }
 
 export function scatterOption(data: ScatterData): ChartOption {
+  const sx = shownOf(data.x.unit, data.x.display);
+  const sy = shownOf(data.y.unit, data.y.display);
+  const spread = (i: 0 | 1) => {
+    const v = data.points.map((p) => p[i]);
+    return v.length ? (Math.max(...v) - Math.min(...v)) / 5 : undefined;
+  };
   return {
-    ...base(data.x.unit),
+    ...base(data.x.unit, sx),
     tooltip: { show: false },
     grid: { left: 70, right: 30, top: 24, bottom: 46 },
-    xAxis: valueAxis({ scale: true, name: `${data.x.name} (${data.x.unit})`, nameLocation: "middle", nameGap: 28,
-      nameTextStyle: { color: COLORS.text, fontSize: 13 } }),
-    yAxis: valueAxis({ scale: true, name: `${data.y.name} (${data.y.unit})`, nameLocation: "middle", nameGap: 48,
-      nameTextStyle: { color: COLORS.text, fontSize: 13 } }),
+    xAxis: valueAxis({ scale: true, name: `${data.x.name} (${sx.unit})`, nameLocation: "middle", nameGap: 28,
+      nameTextStyle: { color: COLORS.text, fontSize: 13 }, ...labelsIn(sx, spread(0)) }),
+    yAxis: valueAxis({ scale: true, name: `${data.y.name} (${sy.unit})`, nameLocation: "middle", nameGap: 48,
+      nameTextStyle: { color: COLORS.text, fontSize: 13 }, ...labelsIn(sy, spread(1)) }),
     series: [
       { type: "scatter", name: "readings", data: data.points, symbolSize: 4, large: true,
         itemStyle: { color: hexToRgba(COLORS.cyan, data.highlight ? 0.22 : 0.38) }, emphasis: { disabled: true } },
@@ -549,19 +585,21 @@ export function scatterOption(data: ScatterData): ChartOption {
 
 export function barOption(data: BarData): ChartOption {
   const digits = data.metric === "events" ? 0 : 2;
+  const shown = shownOf(data.unit, data.display);
   return {
-    ...base(data.unit),
+    ...base(data.unit, shown),
     tooltip: { show: false },
     grid: { left: 64, right: 26, top: 34, bottom: 40 },
     xAxis: { type: "category", data: data.categories, axisLine: { lineStyle: { color: COLORS.axis } },
       axisTick: { show: false }, axisLabel: { color: COLORS.text, fontSize: 13 } },
-    yAxis: valueAxis({ name: data.unit, nameTextStyle: { color: COLORS.dim } }),
+    yAxis: valueAxis({ name: shown.unit, nameTextStyle: { color: COLORS.dim }, ...labelsIn(shown) }),
     series: [{
       type: "bar", name: data.label, barMaxWidth: 90,
       data: data.values.map((v, i) => ({ value: v, itemStyle: { color: COLORS.series[i % COLORS.series.length],
         borderRadius: [6, 6, 0, 0] } })),
       label: { show: true, position: "top", color: COLORS.text, fontFamily: FONT, fontSize: 15, fontWeight: 600,
-        formatter: (p: { value: number }) => `${p.value.toFixed(digits)}${data.unit ? ` ${data.unit}` : ""}` },
+        formatter: (p: { value: number }) => (shown.display ? posUnit(p.value, shown)
+          : `${p.value.toFixed(digits)}${data.unit ? ` ${data.unit}` : ""}`) },
       emphasis: { disabled: true },
     }],
   };
@@ -575,10 +613,6 @@ function signed(v: number | null | undefined, digits: number): string {
 // ---------------------------------------------------------------------------
 // The shift timeline (zoomable from hours down to single readings)
 // ---------------------------------------------------------------------------
-
-const KIND_SHORT: Record<string, string> = {
-  vibration: "knock", noise: "noise", drift: "drift", out_of_range: "out of tol.", invalid: "no signal",
-};
 
 /** time in ms, average, lowest, highest */
 export type ShiftPoint = [number, number | null, number | null, number | null];
@@ -610,12 +644,14 @@ export function shiftSeriesData(points: ShiftPoint[]): [number, number | null][]
 
 export function shiftOption(data: RangeData, points: ShiftPoint[], window?: [number, number]): ChartOption {
   const color = COLORS.cyan;
+  const shown = shownOf(data.unit, data.display, data.limit_word);
+  const at = (v: number) => (shown.display ? pos(v, shown) : signed(v, 2));
   const [line, low, spread] = shiftSeriesData(points);
   const [w0, w1] = window ?? [data.t0, data.t1];
   const band = { type: "line", showSymbol: false, silent: true, connectNulls: false, stack: "band",
     stackStrategy: "all", lineStyle: { opacity: 0 }, emphasis: { disabled: true }, animation: false };
   return {
-    ...base(data.unit),
+    ...base(data.unit, shown),
     animation: false,
     tooltip: { ...plainTooltip(), trigger: "axis",
       formatter: (params: { seriesName: string; value: [number, number | null] }[]) => {
@@ -628,13 +664,13 @@ export function shiftOption(data: RangeData, points: ShiftPoint[], window?: [num
         const lo = find(`${HIDDEN}low`);
         const sp = find(`${HIDDEN}spread`);
         const range = lo !== null && sp !== null && sp > 0.005
-          ? `<br/>lowest ${signed(lo, 2)}, highest ${signed(lo + sp, 2)}` : "";
-        return `${d.toLocaleTimeString()}.${ms}<br/><b>${signed(v, 2)} ${data.unit}</b>${range}`;
+          ? `<br/>lowest ${at(lo)}, highest ${at(lo + sp)}` : "";
+        return `${d.toLocaleTimeString()}.${ms}<br/><b>${at(v)} ${shown.unit}</b>${range}`;
       } },
     grid: { left: 64, right: 24, top: 26, bottom: 64 },
     xAxis: { type: "time", axisLine: { lineStyle: { color: COLORS.axis } }, splitLine: { show: false },
       axisLabel: { color: COLORS.dim, fontSize: 11, hideOverlap: true } },
-    yAxis: valueAxis({ scale: true, name: data.unit, nameTextStyle: { color: COLORS.dim } }),
+    yAxis: valueAxis({ scale: true, name: shown.unit, nameTextStyle: { color: COLORS.dim }, ...labelsIn(shown) }),
     dataZoom: [
       { type: "inside", xAxisIndex: 0, filterMode: "weakFilter", zoomOnMouseWheel: true, moveOnMouseMove: true,
         minValueSpan: 40 },
@@ -713,9 +749,9 @@ export function incidentOption(data: IncidentChartData): ChartOption {
 
     const [lo, hi] = extent(s.values);
     // the tolerance limits appear only when the readings come near them, as in the timeseries view
-    const mid = (s.tolerance.high + s.tolerance.low) / 2;
-    const nearLimit = hi >= mid + (s.tolerance.high - mid) / 2 || lo <= mid - (mid - s.tolerance.low) / 2;
-    const [yMin, yMax] = nearLimit
+    const shown = shownOf(unit);
+    const near = nearLimit(s.tolerance, lo, hi, shown);
+    const [yMin, yMax] = near
       ? niceRange(Math.min(lo, s.tolerance.low), Math.max(hi, s.tolerance.high))
       : niceRange(lo, hi);
     yAxes.push(valueAxis({
@@ -738,8 +774,8 @@ export function incidentOption(data: IncidentChartData): ChartOption {
           fontSize: 11, fontWeight: 600 },
       });
     }
-    if (nearLimit) {
-      for (const mark of toleranceMarks(s.tolerance, unit)) {
+    if (near) {
+      for (const mark of toleranceMarks(s.tolerance, shown)) {
         lines.push({ ...mark, lineStyle: { color: COLORS.red, type: "dashed", width: 1, opacity: 0.8 } });
       }
     }

@@ -4,6 +4,7 @@ import { controller } from "../controller";
 import { api, ApiError } from "../lib/api";
 import { COLORS, echarts } from "../lib/charts";
 import { num } from "../lib/format";
+import { axisFormatter, shownFor } from "../lib/units";
 import { useStore } from "../state/store";
 import type { AssistantPlan } from "../types";
 import { Icon } from "./Icon";
@@ -18,10 +19,15 @@ const UNIT: Record<string, string> = { measuring_rate_hz: " Hz" };
 function Preview({ plan }: { plan: AssistantPlan }) {
   const ref = useRef<HTMLDivElement>(null);
   const mission = useStore((s) => s.mission);
+  const info = useStore((s) => s.config?.sensors.find((x) => x.id === plan.sensor));
   useEffect(() => {
     if (!ref.current) return;
     const chart = echarts.init(ref.current, undefined, { renderer: "canvas" });
     const n = plan.preview.before.length;
+    // positions of a sensor with a display unit (mm) are labelled in it; the signal underneath stays in µm
+    const values = plan.preview.before.filter((v): v is number => v !== null);
+    const step = values.length ? (Math.max(...values) - Math.min(...values)) / 4 : undefined;
+    const formatter = axisFormatter(shownFor(info), step);
     const xs = Array.from({ length: n }, (_, i) => ((i / Math.max(n - 1, 1)) * plan.preview.window_s - plan.preview.window_s).toFixed(2));
     const improving = plan.status === "improve";
     chart.setOption({
@@ -32,7 +38,7 @@ function Preview({ plan }: { plan: AssistantPlan }) {
       xAxis: { type: "category", data: xs, boundaryGap: false,
         axisLabel: { color: COLORS.dim, interval: Math.floor(n / 4), formatter: (v: string) => `${Number(v).toFixed(1)} s` },
         axisLine: { lineStyle: { color: COLORS.axis } }, axisTick: { show: false } },
-      yAxis: { type: "value", scale: true, splitNumber: 4, axisLabel: { color: COLORS.dim },
+      yAxis: { type: "value", scale: true, splitNumber: 4, axisLabel: { color: COLORS.dim, ...(formatter ? { formatter } : {}) },
         splitLine: { lineStyle: { color: COLORS.grid } } },
       series: [
         { name: "Now", type: "line", data: plan.preview.before, symbol: "none",
@@ -44,7 +50,7 @@ function Preview({ plan }: { plan: AssistantPlan }) {
     const ro = new ResizeObserver(() => chart.resize());
     ro.observe(ref.current);
     return () => { ro.disconnect(); chart.dispose(); };
-  }, [plan, mission]);
+  }, [plan, mission, info]);
   return <div className="assist-chart" ref={ref} />;
 }
 
@@ -100,6 +106,9 @@ export function AssistantPanel() {
   const unit = plan?.unit ?? "";
   const improving = plan?.status === "improve" && phase === "idle";
   const factor = before && live ? before / live : null;
+  // red only for a noise level above what the sensor allows, not for every piece of advice
+  const noiseTooHigh = plan !== null && (plan.status === "improve"
+    || (plan.measured.noise !== null && plan.measured.noise > plan.measured.noise_limit));
 
   return (
     <div className="sheet-backdrop" onClick={close}>
@@ -115,7 +124,7 @@ export function AssistantPanel() {
             <div className="assist-numbers">
               <div>
                 <span className="assist-label">Noise now</span>
-                <span className={`assist-big ${plan.status === "improve" && phase === "idle" ? "is-bad" : ""}`}>
+                <span className={`assist-big ${noiseTooHigh && phase === "idle" ? "is-bad" : ""}`}>
                   {num(phase === "idle" ? plan.measured.noise : live ?? before, 2)}<small>{unit}</small>
                 </span>
               </div>
@@ -126,13 +135,19 @@ export function AssistantPanel() {
                 </div>
               )}
               <div>
-                <span className="assist-label">Allowed for this tolerance</span>
+                <span className="assist-label">{plan.basis ? plan.basis.replace(/ \(.*\)$/, "") : "Allowed for this tolerance"}</span>
                 <span className="assist-big is-quiet">{num(plan.measured.noise_limit, 2)}<small>{unit}</small></span>
               </div>
             </div>
 
             {phase === "idle" && plan.status === "ok" && (
               <p className="assist-verdict"><Icon name="check" /> {plan.summary}</p>
+            )}
+            {phase === "idle" && plan.status === "advice" && (
+              <>
+                <p className="assist-verdict"><Icon name="alert" /> {plan.summary}</p>
+                <ul className="assist-reasons">{plan.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
+              </>
             )}
             {improving && (
               <>

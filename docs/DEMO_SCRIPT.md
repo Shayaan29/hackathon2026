@@ -140,6 +140,27 @@ real sensors, or plug an optoNCDT 5500 into the laptop with an Ethernet cable,
 and the cockpit watches the real line. The charts, the explanations and the
 timeline come from the data, so they work the same on day one."
 
+## With the real sensor (ILD5500-10)
+
+With `SENSORS_FILE=config/sensors.live.yaml` the cockpit speaks the sensor's own language. Readings are the distance
+DIST1 in millimetres from the start of the measuring range, so a target in the middle reads about 5.00 mm. The limits
+are the measuring range of the data sheet, 0 to 10 mm, with the extended range of -2.5 to 12.5 mm around it. The top bar
+says "Target in measuring range", and the gauge in the sensor tile shows where the target is, with a line under the
+reading that says "in the measuring range", "closer than the range (extended)", "beyond the range (extended)" or
+"outside the extended range". These are the three states of the sensor's own LED: green, flashing green and red.
+
+- Slide the target slowly towards the sensor or away from it until it passes 10 mm (or 0 mm). The alert says "Out of
+  measuring range", where the target is and that the sensor still measures in its extended range, but that the data
+  sheet accuracy only holds inside 0 to 10 mm. Open the report: it names the manual page for the values it uses.
+- Tap the table or the fixture for a real vibration alert. The demo buttons and the phone shake do nothing here,
+  because there is no simulator behind them.
+- Open the setup check. It does not change anything in the sensor. It compares the noise with the linearity of the
+  data sheet (±1.5 µm) and tells what to check, with the manual page.
+- Hold Space and say "status": Epsilon says where the target is in millimetres and whether it is inside the
+  measuring range.
+- No sensor on the table: `python scripts/fake_ild5500.py --scenario extended --after 25` in `backend/` plays a target
+  that moves from 5 mm out to 11.5 mm after 25 seconds, so it leaves the range but stays in the extended range.
+
 ## If something fails
 
 | Problem | Do this |
@@ -153,4 +174,6 @@ timeline come from the data, so they work the same on day one."
 | The incident spot is missing on the part | The part speed was not typed. Type `8.6` in the sheet, then analyse again. |
 | The scatter has no bright streak | The knock is older than a minute: knock again, then ask. |
 | The 3D view is blank | Gestures and charts still work; the browser needs WebGL (use Chrome or Edge). |
+| The cockpit says "Out of measuring range" straight after the start | The target is outside 30 to 40 mm from the sensor (0 to 10 mm in the cockpit). Move the target into the range. The tile says which status code the sensor reports. |
+| The reading differs from the sensor's web page | The cockpit counts from the start of the measuring range. If the sensor was mastered or zeroed, its numbers are shifted by that offset: clear the mastering in the web page, or set `reference_mm` in `sensors.live.yaml`. |
 | The live sensor says "sensor not connected" | Check the cable and that nothing else reads the sensor, then restart the cockpit. If it still does not answer, take the `SENSORS_FILE` line out of `backend\.env` and restart: the cockpit is back on the simulated demo sensors and every section above works. |
