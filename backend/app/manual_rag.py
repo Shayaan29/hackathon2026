@@ -696,9 +696,11 @@ class KnowledgeBase:
             "Start with the direct answer, then conditions and caveats. Cite every value with the full citation "
             "given with its passage, including the document, for example [Manual 5500, Section 3.3, Page 12] or "
             "[Datasheet ILD5500-10DR (de), Page 1]; never shorten it to the section or page alone. Use a Markdown table "
-            "when comparing variants or pins. Answer in the language of the question.")
+            "when comparing variants or pins. Write the whole answer in the language the QUESTION is written in, "
+            "never in the language of the passages: some passages are German, and an English question still gets "
+            "an English answer (translate the labels, keep every number and unit exactly).")
         body: dict[str, Any] = {"model": self.answer_model, "instructions": instructions,
-                                "input": f"Manual passages:\n\n{context}\n\nQuestion: {question}"}
+                                "input": f"Manual passages:\n\n{context}\n\nQuestion (answer in its language): {question}"}
         if self.reasoning_effort and re.match(r"^(gpt-5|o\d)", self.answer_model):
             body["reasoning"] = {"effort": self.reasoning_effort}
         data = self._post("/responses", body)
