@@ -164,7 +164,7 @@ export function PhoneApp() {
       <section className="ph-watching">
         <div className="ph-radar" />
         <div className="ph-watch-text">
-          Watching {hello?.sensors.length ?? 0} sensors
+          Watching {hello?.sensors.length ?? 0} sensor{(hello?.sensors.length ?? 0) === 1 ? "" : "s"}
           <span>{hello?.sensors.map((s) => s.name).join(", ")}</span>
         </div>
       </section>

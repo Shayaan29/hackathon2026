@@ -5,7 +5,7 @@ import { KIND_LABEL, num, signed } from "../lib/format";
 import { series } from "../lib/live";
 import { useStore } from "../state/store";
 import { pos, shownFor, zoneOf, ZONE_WORDS, type Shown } from "../lib/units";
-import type { LiveStatus, SensorInfo } from "../types";
+import type { LiveStatus, SensorInfo, SensorStatus } from "../types";
 
 const SPAN = 1.3; // the gauge shows 1.3 times the tolerance band
 
@@ -70,6 +70,7 @@ function Readout({ sensor, register }: {
   const state = status?.state ?? "ok";
   const active = status?.active ?? [];
   const live = status?.live;
+  const part = status?.part;
 
   return (
     <div className={`readout readout-${state}`}>
@@ -99,6 +100,12 @@ function Readout({ sensor, register }: {
         {active.length > 0 && <span className="readout-active">{active.map((k) => KIND_LABEL[k]).join(", ")}</span>}
       </div>
       {live && <LiveLine live={live} />}
+      {part?.supported && (
+        <button className={`readout-part part-${part.state}`} onClick={() => controller.openPartCheck(sensor.id)}
+          title="Teach a part and flag every other one">
+          {PART_CHIP[part.state]}{part.state !== "no_reference" && !part.steady ? " …" : ""}
+        </button>
+      )}
       {hint === "improve" && (
         <button className="readout-hint" onClick={() => controller.openAssistant(sensor.id)}>
           Setup can be better. Check it
@@ -112,6 +119,14 @@ function Readout({ sensor, register }: {
     </div>
   );
 }
+
+const PART_CHIP: Record<NonNullable<SensorStatus["part"]>["state"], string> = {
+  no_reference: "Part check: teach a part",
+  waiting: "Part check: waiting for a part",
+  match: "Taught part",
+  different: "Different part",
+  empty: "Nothing under the sensor",
+};
 
 export function SensorStrip() {
   const config = useStore((s) => s.config);

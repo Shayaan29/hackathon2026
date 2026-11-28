@@ -124,7 +124,7 @@ class Controller {
       const event = data && "events" in data ? data.events.find((e) => e.id === eventId) : undefined;
       if (event) {
         const around: Record<string, [number, number]> = {
-          vibration: [0.4, 1.6], drift: [600, 900], noise: [120, 600], invalid: [20, 45], out_of_range: [3, 9],
+          vibration: [0.4, 1.6], drift: [600, 900], noise: [120, 600], invalid: [20, 45], out_of_range: [3, 9], wrong_part: [3, 6],
         };
         const [before, after] = around[event.kind] ?? [30, 60];
         store().setFocus(front.id, event.t - before, event.t + after);
@@ -257,7 +257,13 @@ class Controller {
   }
 
   openAssistant(sensor?: string): void {
-    store().patch({ assistantFor: this.resolveSensor(sensor ?? this.lastSensor ?? this.firstSensor()), reportId: null });
+    store().patch({ assistantFor: this.resolveSensor(sensor ?? this.lastSensor ?? this.firstSensor()), reportId: null,
+      partFor: null });
+  }
+
+  openPartCheck(sensor?: string): void {
+    store().patch({ partFor: this.resolveSensor(sensor ?? this.lastSensor ?? this.firstSensor()), reportId: null,
+      assistantFor: null });
   }
 
   /** Quietly checks every sensor's setup, so the cockpit can offer a fix on its own. */
@@ -917,6 +923,10 @@ class Controller {
         if (intent.action === "back") this.say(phrase(this.back() ? "back" : "nothing_back", lang), lang);
         else if (this.dismiss()) this.say(phrase("dismiss", lang), lang);
         return;
+      case "partcheck":
+        this.openPartCheck(intent.sensor);
+        this.say(phrase("partcheck_open", lang), lang);
+        return;
       case "status": {
         const sensors = intent.sensor ? [intent.sensor] : (store().config?.sensors ?? []).map((s) => s.id);
         const parts: string[] = [];
@@ -1075,7 +1085,7 @@ class Controller {
         this.toggleSound();
         break;
       case "Escape":
-        if (s.reportId || s.assistantFor) s.patch({ reportId: null, assistantFor: null });
+        if (s.reportId || s.assistantFor || s.partFor) s.patch({ reportId: null, assistantFor: null, partFor: null });
         else if (s.manualsOpen) s.patch({ manualsOpen: false });
         else if (s.manualHit) s.patch({ manualHit: null });
         else if (s.recordingOpen) s.patch({ recordingOpen: false });

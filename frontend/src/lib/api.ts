@@ -16,6 +16,7 @@ import type {
   ManualPassage,
   ChatTurn,
   MappingDraft,
+  PartState,
   RangeData,
   RecordingJob,
   ScatterData,
@@ -121,6 +122,13 @@ export const api = {
   assistant: (sensor: string) => request<AssistantPlan>(`/api/assistant/${encodeURIComponent(sensor)}`),
   applyAssistant: (sensor: string) =>
     post<{ ok: boolean; error?: string; summary?: string }>(`/api/assistant/${encodeURIComponent(sensor)}/apply`),
+  part: (sensor: string) => request<PartState>(`/api/part/${encodeURIComponent(sensor)}`),
+  partLearn: (sensor: string, body: { kind?: "part" | "empty"; add?: boolean; margin_um?: number }) =>
+    post<PartState>(`/api/part/${encodeURIComponent(sensor)}/learn`, body),
+  partMargin: (sensor: string, margin_um: number) =>
+    post<PartState>(`/api/part/${encodeURIComponent(sensor)}/margin`, { margin_um }),
+  partForget: (sensor: string, what: "all" | "part" | "empty" = "all") =>
+    post<PartState>(`/api/part/${encodeURIComponent(sensor)}/forget`, { what }),
   suggestSettings: (sensor: string) => post<Record<string, unknown>>("/api/tools/suggest_settings", { sensor }),
   createReport: (eventId?: string) =>
     post<{ ok: boolean; id?: string; title?: string; error?: string }>("/api/tools/create_report", { event_id: eventId }),

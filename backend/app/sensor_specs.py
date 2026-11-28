@@ -1,9 +1,14 @@
 """What the data sheet says about the sensor.
 
 The cockpit shows the readings of a real optoNCDT 5500 (ILD5500) the way the sensor reports them and takes its
-limits from the operating instructions (``man--optoNCDT-5500--en.pdf``). Nothing in this file is measured: it
-is the manufacturer's statement. Every value therefore carries the printed page it comes from, so a report or
-the copilot can say where a number comes from.
+limits from the operating instructions (``man--optoNCDT-5500--en.pdf``) and the data sheet
+(``dat--optoNCDT-5500--de.pdf``). Nothing in this file is measured: it is the manufacturer's statement. Every
+value therefore carries the printed page it comes from, so a report or the copilot can say where a number comes from.
+
+The data sheet is the newer document. Where the two differ it wins: the light spot sizes, the temperature
+stability (0.005 % FSO per K for the -10, -25 and -50, not 0.008) and the linearity of the -25, -100 and -200
+(3.75, 20 and 60 µm, not 5, 30 and 80). The start, middle and end of the measuring range and the extended range
+are the same in both.
 
 Coordinates. The distance DIST1 that the sensor sends over Ethernet is counted from the start of the measuring
 range (SMR): 0 mm at SMR, the measuring range in mm at the end (EMR), and negative values or values above the
@@ -20,6 +25,11 @@ from dataclasses import dataclass
 from typing import Any
 
 MANUAL = "optoNCDT 5500 operating instructions"
+DATASHEET = "optoNCDT 5500 data sheet"
+
+# printed page of the data sheet's technical data table (page 6). These keys are quoted from the data sheet, every
+# other key from the manual.
+DS_PAGE = {"linearity": 6, "repeatability": 6, "spot": 6, "temperature": 6}
 
 # printed page numbers of the manual
 PAGE = {
@@ -149,7 +159,7 @@ class SensorSpec:
         if live_rate_khz:
             rate += f"; this sensor streams {_g(round(live_rate_khz, 2))} kHz"
         mid, a, b = self.spot_mmr_um, self.spot_smr_um, self.spot_emr_um
-        return [
+        rows = [
             {"label": "Model", "value": f"{self.title}, measuring range {_g(self.measuring_range_mm)} mm",
              "page": PAGE["range"]},
             {"label": "Measuring range",
@@ -163,18 +173,18 @@ class SensorSpec:
             {"label": "Linearity",
              "value": (f"< ±{_g(self.linearity_um)} µm (±{_g(self.linearity_pct_fso)} % FSO), standard range "
                        "only; with median 9 + moving average 4096, 20 kHz, mid of range, white ceramic"),
-             "page": PAGE["linearity"]},
+             "page": DS_PAGE["linearity"], "source": DATASHEET},
             {"label": "Repeatability",
              "value": f"< {_g(self.repeatability_um)} µm, with median 9 + moving average 4096 at 150 kHz",
-             "page": PAGE["linearity"]},
+             "page": DS_PAGE["repeatability"], "source": DATASHEET},
             {"label": "Light spot",
              "value": (f"{mid[0]} × {mid[1]} µm at mid range ({a[0]} × {a[1]} µm at the start, "
                        f"{b[0]} × {b[1]} µm at the end)"),
-             "page": PAGE["spot"]},
+             "page": DS_PAGE["spot"], "source": DATASHEET},
             {"label": "Temperature stability",
              "value": (f"±{_g(self.temperature_pct_fso_per_k)} % FSO per K, that is up to "
                        f"{self.temperature_um_per_k:.2f} µm per K on a metal holder, 20 to 50 °C"),
-             "page": PAGE["temperature"]},
+             "page": DS_PAGE["temperature"], "source": DATASHEET},
             {"label": "Measuring rate", "value": rate, "page": PAGE["general"]},
             {"label": "Ambient light",
              "value": (f"up to {AMBIENT_LUX:,} lx with background suppression; "
@@ -187,6 +197,9 @@ class SensorSpec:
             {"label": "Warm-up", "value": f"at least {WARMUP_MIN} minutes before measuring in the µm range",
              "page": PAGE["warmup"]},
         ]
+        for row in rows:
+            row.setdefault("source", MANUAL)
+        return rows
 
     def summary(self) -> str:
         """Two sentences for the copilot's instructions."""
@@ -205,21 +218,24 @@ def _spec(model: str, mr: float, start: float, mid: float, end: float, e_start: 
                       smr, mmr, emr, smallest, smallest_at, temp, exp_khz, exp_us)
 
 
-# chapter 3.4 (pages 12, 13), table 5.4 / 5.5 (page 19) and the EXPOSURELIMIT table (page 17)
+# Data sheet, technical data (page 6) and dimensions (pages 8 and 9); the exposure limit is from table
+# EXPOSURELIMIT of the manual (page 17).
 CATALOGUE: dict[int, SensorSpec] = {
     10: _spec("ILD5500-10", 10, 30, 35, 40, 27.5, 42.5, 1.5, 0.015, 0.008,
-              (85, 200), (60, 75), (130, 250), (30, 47), 34.5, 0.008, 3.33, 300),
-    25: _spec("ILD5500-25", 25, 40, 52.5, 65, 35, 72.5, 5.0, 0.015, 0.013,
-              (140, 310), (60, 90), (230, 380), (46, 66), 51.1, 0.008, 1.0, 1000),
+              (120, 250), (70, 45), (100, 170), (47, 30), 35.6, 0.005, 3.33, 300),
+    25: _spec("ILD5500-25", 25, 40, 52.5, 65, 35, 72.5, 3.75, 0.015, 0.013,
+              (190, 370), (80, 60), (180, 290), (66, 46), 52.3, 0.005, 1.0, 1000),
     50: _spec("ILD5500-50", 50, 45, 70, 95, 40, 115, 7.5, 0.015, 0.021,
-              (270, 530), (130, 150), (325, 570), (58, 82), 68.1, 0.008, 1.6, 600),
-    100: _spec("ILD5500-100", 100, 70, 120, 170, 55, 205, 30.0, 0.02, 0.042,
-               (200, 500), (200, 500), (640, 1100), (82, 117), 99.0, 0.02, 0.25, 4000),
-    200: _spec("ILD5500-200", 200, 100, 200, 300, 70, 370, 80.0, 0.03, 0.098,
-               (780, 1800), (780, 1800), (780, 1800), None, None, 0.02, 0.8, 1300),
+              (280, 550), (95, 70), (320, 550), (87, 63), 66.9, 0.005, 1.6, 600),
+    100: _spec("ILD5500-100", 100, 70, 120, 170, 55, 205, 20.0, 0.02, 0.042,
+               (320, 630), (320, 630), (440, 740), (121, 89), 107.0, 0.02, 0.25, 4000),
+    200: _spec("ILD5500-200", 200, 100, 200, 300, 70, 370, 60.0, 0.03, 0.098,
+               (960, 1940), (960, 1940), (960, 1940), None, None, 0.02, 0.8, 1300),
 }
 
-_MODEL = re.compile(r"ild\s*-?\s*5500\s*[-_ ]?\s*(10|25|50|100|200)(?!\d)", re.IGNORECASE)
+# "ILD5500-10DR" (direct reflect, for mirror-like surfaces) is another sensor with another working distance
+# (23 to 33 mm), so it is not read as the plain -10.
+_MODEL = re.compile(r"ild\s*-?\s*5500\s*[-_ ]?\s*(10|25|50|100|200)(?!\d|\s*-?\s*dr)", re.IGNORECASE)
 
 
 def find_spec(text: str | None) -> SensorSpec | None:

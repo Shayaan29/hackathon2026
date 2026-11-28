@@ -21,7 +21,7 @@
 
 cockpit:
   title: "KI Sensor Cockpit"
-  team: "Mega Brains"               # your team name, shown in the header
+  team: "Mega Mind"               # your team name, shown in the header
   assistant_name: "Epsilon"
   language: "en"                    # en or de
 

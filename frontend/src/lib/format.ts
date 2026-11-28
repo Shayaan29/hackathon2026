@@ -40,11 +40,12 @@ export const KIND_LABEL: Record<EventKind, string> = {
   drift: "Drift",
   out_of_range: "Out of tolerance",
   invalid: "Invalid readings",
+  wrong_part: "Different part",
 };
 
 /** Short names for the alert lines on the timelines. */
 export const KIND_SHORT: Record<string, string> = {
-  vibration: "knock", noise: "noise", drift: "drift", out_of_range: "out of tol.", invalid: "no signal",
+  vibration: "knock", noise: "noise", drift: "drift", out_of_range: "out of tol.", invalid: "no signal", wrong_part: "other part",
 };
 
 /**

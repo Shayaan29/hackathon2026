@@ -235,6 +235,25 @@ How it behaves:
   `out-of-range`; `--help` lists the options. The fake sensor serves one client at a time. Set `LIVE_SENSOR_HOST=127.0.0.1` in `.env` to try the
   whole chain.
 
+#### Part check: "only this part, flag everything else"
+
+Put one good part under the sensor and press the **Part check** button in the sensor tile (or say "teach this part").
+Hold the part still and press **Teach this part**. From then on the cockpit knows where the top surface of that part
+is. Anything else that stays under the sensor for about half a second raises **Different part detected**, once per
+foreign part, with its height, how far it is from the taught part and what that means. A part that is still sliding
+in, or a lost target, raises nothing. Putting something under the sensor or taking it away never raises a vibration,
+noise or drift alert, taught part or not: such an alert waits one second and is dropped when a jump of the level
+explains it. A knock on the table still raises a vibration alert, one second later.
+
+- The accepted band is the spread of the taught parts plus a margin (starting value ±0.10 mm, change it in the
+  panel). **Add another good part** widens the band to the real spread of your parts.
+- **Teach the empty plate** lets the cockpit say "nothing under the sensor" for a part taken away (no alert) and show
+  the height of the part above the plate.
+- The taught part is kept in `backend/data/part_reference.json` (git-ignored), so it survives a restart.
+- Limit, said honestly: a distance sensor sees the height of the top surface only. A different part with the same
+  height, or a hole under the spot, cannot be told apart.
+- Rehearse without parts: `python scripts/fake_ild5500.py --scenario parts --after 40` in `backend/`.
+
 `SOURCE_OVERRIDE=simulator` in `.env` forces dummy data for every sensor:
 the safe switch if hardware misbehaves on stage.
 

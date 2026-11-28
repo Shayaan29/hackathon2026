@@ -26,9 +26,15 @@ from .geometry import track_angle
 from .hub import COCKPIT, PHONE, Hub
 from .incidents import IncidentStore
 from .ingest import Recording
+from .partcheck import PartCheck
 from .sources import SensorSource, SimulatedSensor, SourceError, create_source
 from .sources.recording import RecordingSource
 from .sources.simulator import make_history
+
+# Putting a part under the sensor or taking it away moves the signal in one jump, and the rules read that jump as a
+# vibration. These alerts wait a second: when a level jump explains them, they are dropped and kept out of the status.
+SWAP_QUIET_KINDS = frozenset({"vibration", "noise", "drift"})
+SWAP_HOLD_BACK_S = 1.0
 
 SNAPSHOT_BEFORE_S = 3.0  # full-rate data kept around every alert, for zooming in later
 SNAPSHOT_AFTER_S = 3.5
@@ -62,6 +68,10 @@ class Engine:
         self.sources: dict[str, SensorSource] = {}
         self.source_info: dict[str, dict[str, Any]] = {}
         self.detector = Detector(settings.sensors, settings.detection, self.rate_hz)
+        # the taught part of each sensor lives next to the manuals, in backend/data
+        self._held: list[tuple[float, Event]] = []
+        self._muted: dict[str, set[str]] = {}   # alerts dropped as part swaps, hidden until their rule clears
+        self.partcheck = PartCheck(settings.sensors, settings.knowledge_dir.parent / "part_reference.json")
         self.events: deque[Event] = deque(maxlen=300)
         self.values: dict[str, dict[str, Any]] = {
             s.id: {name: spec.default for name, spec in s.settings.items()} for s in settings.sensors
@@ -145,6 +155,9 @@ class Engine:
         self.buffers = {s.id: SensorBuffer(self.rate_hz, eng.fast_buffer_s, eng.slow_buffer_s)
                         for s in self.settings.sensors}
         self.detector = Detector(self.settings.sensors, self.settings.detection, self.rate_hz)
+        self.partcheck.reset()
+        self._held = []
+        self._muted = {}
         self.events.clear()
         self.history_events = []
         self.snapshots = {s.id: [] for s in self.settings.sensors}
@@ -238,7 +251,15 @@ class Engine:
                 last_display = now
             if now - last_eval >= self.settings.detection.eval_interval_s:
                 if self.live_detection:
+                    self.partcheck.watch_swaps(self.buffers, now)
                     for event in self.detector.evaluate(self.buffers, now):
+                        if event.kind in SWAP_QUIET_KINDS and self.partcheck.watches(event.sensor):
+                            self._held.append((now + SWAP_HOLD_BACK_S, event))     # decided a moment later
+                            self._mute(event, True)
+                        else:
+                            self.publish_event(event)
+                    self._release_held(now)
+                    for event in self.partcheck.evaluate(self.buffers, now):
                         self.publish_event(event)
                 last_eval = now
             if now - last_status >= self.status_interval_s:
@@ -323,6 +344,29 @@ class Engine:
                          f"second, {sensor_specs.reasons_text(reasons)}. "
                          f"{sensor_specs.invalid_hint(main, cfg.spec)}")
 
+    def _mute(self, event: Event, on: bool) -> None:
+        for sid in (event.sensor, *event.related_sensors):
+            kinds = self._muted.setdefault(sid, set())
+            if on:
+                kinds.add(event.kind)
+            else:
+                kinds.discard(event.kind)
+
+    def _release_held(self, now: float) -> None:
+        keep: list[tuple[float, Event]] = []
+        for due, event in self._held:
+            if due > now:
+                keep.append((due, event))
+            elif self.partcheck.swapped_since(event.sensor, event.t - SWAP_HOLD_BACK_S):
+                log.info("%s: %s alert dropped, the level jumped (something was put under the sensor or taken away)",
+                         event.sensor, event.kind)
+            else:
+                self._mute(event, False)
+                self.publish_event(event)
+        self._held = keep
+        for sid, kinds in self._muted.items():       # forget a dropped alert once its rule has cleared
+            kinds &= set(self.detector.active_kinds(sid)) | {e.kind for _, e in keep if sid in (e.sensor, *e.related_sensors)}
+
     def publish_event(self, event: Event) -> None:
         self._enrich(event)
         self._snapshot_due.append((event.t + SNAPSHOT_AFTER_S + 0.3, event))
@@ -332,8 +376,14 @@ class Engine:
 
     # -- state for the UI --------------------------------------------------
 
+    def active_kinds(self, sid: str) -> list[str]:
+        """Every alert that is on for a sensor: the signal rules and the part check."""
+        muted = self._muted.get(sid, set())
+        kinds = [kind for kind in self.detector.active_kinds(sid) if kind not in muted]
+        return [*kinds, "wrong_part"] if self.partcheck.is_different(sid) else kinds
+
     def sensor_state(self, sid: str) -> str:
-        active = self.detector.active_kinds(sid)
+        active = self.active_kinds(sid)
         if "out_of_range" in active or ("drift" in active
                                         and self.detector.state[sid].drift_severity == "critical"):
             return "critical"
@@ -364,7 +414,8 @@ class Engine:
                 "noise": round_or_none(baseline, 3),
                 "noise_ratio": round_or_none(metrics.ratio_noise if metrics else None, 2),
                 "state": self.sensor_state(cfg.id),
-                "active": self.detector.active_kinds(cfg.id),
+                "active": self.active_kinds(cfg.id),
+                "part": self.partcheck.public(cfg.id),
                 "source": self.source_info.get(cfg.id, {}),
                 "live": self._live_status(cfg.id),
                 "read_error": self._read_errors.get(cfg.id),

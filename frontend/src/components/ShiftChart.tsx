@@ -14,7 +14,7 @@ import type { RangeData, ShiftData } from "../types";
 type Point = ShiftPoint;
 
 const AROUND: Record<string, [number, number]> = {
-  vibration: [0.4, 1.6], drift: [600, 900], noise: [120, 600], invalid: [20, 45], out_of_range: [3, 9],
+  vibration: [0.4, 1.6], drift: [600, 900], noise: [120, 600], invalid: [20, 45], out_of_range: [3, 9], wrong_part: [3, 6],
 };
 
 function toPoints(d: RangeData): Point[] {

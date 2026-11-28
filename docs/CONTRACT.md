@@ -218,7 +218,7 @@ wording changes.
 "spec": {"family": "optoNCDT 5500", "model": "ILD5500-10", "title": "optoNCDT ILD5500-10",
          "measuring_range_mm": 10, "start_mm": 30, "mid_mm": 35, "end_mm": 40,
          "zones_um": {"ext_low": -2500.0, "low": 0.0, "mid": 5000.0, "high": 10000.0, "ext_high": 12500.0},
-         "linearity_um": 1.5, "repeatability_um": 0.008, "temperature_um_per_k": 0.8,
+         "linearity_um": 1.5, "repeatability_um": 0.008, "temperature_um_per_k": 0.5,
          "manual": "optoNCDT 5500 operating instructions"}
 ```
 
@@ -243,7 +243,12 @@ the cockpit does not change the sensor's own settings. It answers with `"status"
 `improve`), `basis` (what the noise was compared with, for example `"Data sheet linearity (±1.5 µm)"`), `proposal` an
 empty list and `reasons` the things to check, each with its manual page.
 
-`GET /api/reports/{event_id}` gains `datasheet`: `{"title", "manual", "rows": [{"label", "value", "page"}]}` (or `null`),
+The catalogue follows the newer data sheet (`optoNCDT 5500 data sheet`, page 6) for linearity, repeatability, spot
+size and temperature; everything else comes from the operating instructions. A `-DR` variant (for example
+`ILD5500-10DR`) is a different sensor and is not in the catalogue: it gets no data sheet.
+
+`GET /api/reports/{event_id}` gains `datasheet`: `{"title", "manual", "datasheet", "rows": [{"label", "value", "page", "source"}]}`
+(or `null`; `source` is the document the row comes from),
 and each entry of `sensors` gains `display` and `limit_word`. The title says "Out of measuring range" for such a sensor,
 "Out of tolerance" for a part tolerance. The ticket text names the sensor, its range and linearity with the manual page.
 
@@ -366,3 +371,32 @@ runs, 404 for an unknown incident id.
 
 The chart the cockpit shows for an incident is the chart view `incident`, with
 its `event_id`: `{"view": "incident", "sensors": ["s2"], "event_id": "INC-002"}`.
+
+
+## Part check (`wrong_part`)
+
+A sensor that reports micrometres can be taught one good part; every other thing under the sensor raises an event.
+
+`status` message, per sensor: `part`:
+
+```json
+"part": {"supported": true, "state": "match", "steady": true, "position_um": 3001.2, "message": "…",
+         "reference": {"center_um": 3001.9, "half_width_um": 100.0, "margin_um": 100.0, "parts": 1,
+                       "low_um": 3001.9, "high_um": 3001.9, "taught_at": 1795811189.25},
+         "empty_um": null, "height_um": null, "alerts": 0}
+```
+
+`state` is `no_reference` (nothing taught), `waiting`, `match`, `different` or `empty`. `reference` and `empty_um`
+are `null` until taught. A sensor in another unit has `"supported": false`.
+
+| Endpoint | Meaning |
+| --- | --- |
+| `GET /api/part/{sensor}` | The `part` object above |
+| `POST /api/part/{sensor}/learn` | `{"kind": "part" \| "empty", "add": false, "margin_um": null}`. Teaches from the last second; `add` adds a part to the taught ones. 409 when the reading is not steady or has no valid values |
+| `POST /api/part/{sensor}/margin` | `{"margin_um": 100}`, 10 to 5000 µm |
+| `POST /api/part/{sensor}/forget` | `{"what": "all" \| "part" \| "empty"}` |
+
+The POST endpoints need the cockpit token. The event kind is `wrong_part` (severity `warning`) with `numbers`
+`value`, `reference`, `half_width`, `deviation`, `parts`, `unit` and, when the empty plate is taught, `height` and
+`reference_height`. It is raised once per foreign part; `vibration`, `noise` and `drift` events are dropped when a
+level jump (a part swap) explains them.

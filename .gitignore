@@ -24,3 +24,6 @@ frontend/public/models/
 Thumbs.db
 .vscode/
 .idea/
+
+# the part taught in the Part check (written by the cockpit on the laptop)
+backend/data/part_reference.json

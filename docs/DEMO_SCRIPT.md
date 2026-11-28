@@ -161,6 +161,16 @@ reading that says "in the measuring range", "closer than the range (extended)", 
 - No sensor on the table: `python scripts/fake_ild5500.py --scenario extended --after 25` in `backend/` plays a target
   that moves from 5 mm out to 11.5 mm after 25 seconds, so it leaves the range but stays in the extended range.
 
+## Part check (optional, 60 s, real sensor or fake)
+
+1. Put one of the small parts under the sensor, hold it still, press **Part check** in the sensor tile, then
+   **Teach this part**. The tile says "Taught part".
+2. Take the part away and put another thing under the sensor: after half a second Epsilon says "Different part
+   detected", with the height and how far it is from the taught part.
+3. Put the good part back: the tile says "Taught part" again. Put a different thing under it again: a new alert.
+4. Say it out loud: the sensor sees the height of the top surface only. A part of the same height looks the same.
+5. No sensor: `python scripts/fake_ild5500.py --scenario parts --after 40` in `backend/`.
+
 ## If something fails
 
 | Problem | Do this |

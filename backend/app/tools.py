@@ -42,7 +42,7 @@ def get_data(engine: Engine, sensor: str, window_s: float = 10.0) -> dict[str, A
         "tolerance": cfg.tolerance.as_dict(),
         "within_tolerance": None if latest is None else cfg.tolerance.contains(latest),
         "state": engine.sensor_state(sid),
-        "active_alerts": engine.detector.active_kinds(sid),
+        "active_alerts": engine.active_kinds(sid),
         "settings": dict(engine.values[sid]),
         "source": engine.source_info.get(sid, {}).get("type"),
     }

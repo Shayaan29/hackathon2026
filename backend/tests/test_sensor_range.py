@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -19,7 +20,7 @@ TOKEN = {"X-Cockpit-Token": "test-token"}
 SENSOR = """\
 cockpit:
   title: "KI Sensor Cockpit"
-  team: "Mega Brains"
+  team: "Mega Mind"
 engine:
   analysis_rate_hz: 500
   fast_buffer_s: 120
@@ -49,6 +50,9 @@ def ranged(settings: Settings, tmp_path: Path) -> Settings:
 
 
 # -- the data sheet ------------------------------------------------------------------------------------------
+
+CITED = re.compile(r"(manual|data sheet) pp?\. \d")
+
 
 def test_ild5500_10_values_are_those_of_the_manual():
     spec = find_spec("optoNCDT ILD5500-10")
@@ -217,7 +221,7 @@ def test_a_noisy_signal_gets_advice_with_manual_pages_and_no_settings_to_push(cl
     client.post("/api/demo/reset", headers=TOKEN, json={})
     assert plan["status"] == "advice" and plan["proposal"] == []
     assert "against a data sheet linearity of ±1.5 µm" in plan["summary"]
-    assert all("manual p." in line for line in plan["reasons"])
+    assert all(CITED.search(line) for line in plan["reasons"])
     assert "The cockpit cannot change the sensor's settings" in plan["reasons"][-1]
     assert client.post("/api/assistant/s1/apply", headers=TOKEN).status_code == 200
 
@@ -230,7 +234,7 @@ def test_a_target_outside_the_range_is_named_as_the_reason_in_the_setup_check(cl
     assert plan["status"] == "advice" and plan["proposal"] == []
     assert plan["summary"].startswith("ILD5500 (ILD5500-10): the target is ")
     assert "measuring range" in plan["summary"] and plan["summary"].endswith("See what to check below.")
-    assert plan["reasons"][0].startswith("The target is ") and "(manual p. 12)" in plan["reasons"][0]
+    assert plan["reasons"][0].startswith("The target is ") and "(data sheet p. 6)" in plan["reasons"][0]
 
 
 def wait_for_event(client, kind: str, seconds: float = 15.0) -> dict:
@@ -250,10 +254,10 @@ def test_a_noise_report_cites_the_manual_and_shows_the_data_sheet(client):
     rep = client.get(f"/api/reports/{event['id']}").json()
     assert rep["datasheet"]["title"] == "optoNCDT ILD5500-10" and len(rep["datasheet"]["rows"]) >= 6
     assert all(row["page"] > 0 for row in rep["datasheet"]["rows"])
-    assert all("manual p." in text for text in rep["causes"] + rep["actions"])
+    assert all(CITED.search(text) for text in rep["causes"] + rep["actions"])
     assert rep["setup"]["status"] == "advice" and rep["setup"]["proposal"] == []
     html = client.get(f"/report/{event['id']}").text
-    assert "optoNCDT ILD5500-10" in html and "manual p. 12" in html and "Linearity" in html
+    assert "optoNCDT ILD5500-10" in html and "data sheet p. 6" in html and "Linearity" in html
 
 
 def test_the_report_of_a_leaving_target_speaks_of_the_measuring_range(client):
@@ -316,3 +320,18 @@ def test_the_copilot_is_told_the_data_sheet_and_to_speak_millimetres(ranged):
     assert "ILD5500-10" in text and "manual p." in text.replace("manual page", "manual p.")
     assert "millimetre" in text.lower()
     assert "0 to 10 mm" in text and "-2.5 to 12.5 mm" in text
+
+
+def test_the_catalogue_follows_the_newer_data_sheet():
+    assert [CATALOGUE[m].linearity_um for m in (10, 25, 50, 100, 200)] == [1.5, 3.75, 7.5, 20.0, 60.0]
+    assert CATALOGUE[10].temperature_um_per_k == pytest.approx(0.5)
+    assert CATALOGUE[100].temperature_um_per_k == pytest.approx(20.0)
+    assert CATALOGUE[10].spot_mmr_um == (70, 45) and CATALOGUE[10].smallest_spot_at_mm == 35.6
+    rows = {r["label"]: r for r in CATALOGUE[10].datasheet_rows()}
+    assert rows["Linearity"]["source"] == "optoNCDT 5500 data sheet" and rows["Linearity"]["page"] == 6
+    assert rows["Warm-up"]["source"] == "optoNCDT 5500 operating instructions"
+
+
+@pytest.mark.parametrize("text", ["optoNCDT ILD5500-10DR", "ILD5500-10 DR", "ild5500-10-dr"])
+def test_a_dr_variant_is_not_read_as_the_plain_model(text):
+    assert find_spec(text) is None

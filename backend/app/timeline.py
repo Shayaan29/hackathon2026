@@ -25,11 +25,11 @@ from .analysis import to_json_list
 from .engine import Engine
 
 KIND_WORD = {"vibration": "vibration", "noise": "noise", "drift": "drift",
-             "out_of_range": "out of tolerance", "invalid": "invalid readings"}
+             "out_of_range": "out of tolerance", "invalid": "invalid readings", "wrong_part": "different part"}
 
 # how far around an incident the tour zooms (seconds before, after)
 ZOOM_AROUND = {"vibration": (0.4, 1.6), "drift": (600.0, 900.0), "noise": (120.0, 600.0),
-               "invalid": (20.0, 45.0), "out_of_range": (3.0, 9.0)}
+               "invalid": (20.0, 45.0), "out_of_range": (3.0, 9.0), "wrong_part": (3.0, 6.0)}
 
 
 def clock(t: float) -> str:
@@ -165,7 +165,8 @@ def shift(engine: Engine, sid: str, points: int = 1800) -> dict[str, Any]:
 
     # pick a few incidents worth showing: the worst drift, one knock, the signal loss
     picked: list[dict[str, Any]] = []
-    for kind, severity in (("drift", "critical"), ("vibration", None), ("invalid", None), ("noise", None)):
+    for kind, severity in (("drift", "critical"), ("vibration", None), ("invalid", None), ("noise", None),
+                           ("wrong_part", None)):
         match = [e for e in events if e["kind"] == kind and (severity is None or e["severity"] == severity)]
         if match and len(picked) < 3:
             picked.append(match[0] if kind == "vibration" else match[-1])

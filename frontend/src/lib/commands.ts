@@ -9,6 +9,7 @@ export type Intent =
   | { kind: "show"; spec: ChartSpec }
   | { kind: "stage"; action: "back" | "dismiss" }
   | { kind: "status"; sensor?: string }
+  | { kind: "partcheck"; sensor?: string }
   | { kind: "set"; sensor: string; name: string; value: string }
   | { kind: "confirm" }
   | { kind: "cancel" }
@@ -124,6 +125,10 @@ export function parseCommand(raw: string, ctx: CommandContext): { intent: Intent
     const ev = latest(ctx.events, "drift");
     return { intent: { kind: "show", spec: { view: "drift", sensors: [sensor ?? ev?.sensor ?? fallbackSensor], window_s: 900 } }, lang };
   }
+  if (has(/\b(teach|learn|part check|part-check|bauteilprüfung|teile?|lerne?)\b/)
+      && has(/\b(part|parts|piece|bauteil\w*|teil\w*)\b/)) {
+    return { intent: { kind: "partcheck", sensor }, lang };
+  }
   if (has(/\b(status|summary|report|how is|how are|everything ok|all good|zustand|bericht|wie geht|wie steht|wie läuft|alles ok|alles gut)\b/)) {
     return { intent: { kind: "status", sensor }, lang };
   }
@@ -177,6 +182,10 @@ const PHRASES = {
   unknown: {
     en: "Sorry, I did not get that. Say help to hear what I can do.",
     de: "Das habe ich nicht verstanden. Sag Hilfe, dann erkläre ich, was ich kann.",
+  },
+  partcheck_open: {
+    en: "Opening the part check. Hold one good part still under the sensor and press Teach this part.",
+    de: "Ich öffne die Bauteilprüfung. Halte ein gutes Teil ruhig unter den Sensor und drücke Teil anlernen.",
   },
   status_ok: { en: "{name} is at {value} micrometres, within tolerance.", de: "{name} steht bei {value} Mikrometer, innerhalb der Toleranz." },
   status_out: { en: "{name} is at {value} micrometres, outside tolerance.", de: "{name} steht bei {value} Mikrometer, außerhalb der Toleranz." },

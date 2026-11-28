@@ -36,7 +36,7 @@ FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
 SOURCE_TYPES = ("simulator", "replay", "medaqlib", "ild5500")
-EVENT_KINDS = ("vibration", "noise", "drift", "out_of_range", "invalid")
+EVENT_KINDS = ("vibration", "noise", "drift", "out_of_range", "invalid", "wrong_part")
 
 
 class ConfigError(ValueError):

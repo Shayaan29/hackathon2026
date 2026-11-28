@@ -94,6 +94,8 @@ interface CockpitStore {
   feed: FeedItem[];
   reportId: string | null;
   assistantFor: string | null;
+  /** the part check sheet of this sensor */
+  partFor: string | null;
   hints: Record<string, "ok" | "improve" | "advice">;
   lastShake: ShakeInfo | null;
   /** the recording sheet and the incident list */
@@ -159,6 +161,7 @@ export const useStore = create<CockpitStore>((set, get) => ({
   feed: [],
   reportId: null,
   assistantFor: null,
+  partFor: null,
   hints: {},
   lastShake: null,
   recordingOpen: false,
