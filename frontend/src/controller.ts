@@ -241,6 +241,19 @@ class Controller {
     }
   }
 
+  /** Switch to the camera the operator picked from the list. */
+  async useCamera(deviceId: string): Promise<void> {
+    try {
+      const label = await camera.start(deviceId, true);
+      store().patch({ camera: { ...store().camera, on: true, label } });
+      store().toast(`Camera: ${label}`, "ok");
+    } catch (error) {
+      const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      store().toast(`This camera did not start (${text}). Close other apps that use it (Camera, Teams, Zoom) and try again.`, "error");
+      void this.toggleCamera();   // back to a working camera
+    }
+  }
+
   private snapParts(message: StatusMessage): void {
     if (!camera.on) return;
     for (const [sid, status] of Object.entries(message.sensors)) {

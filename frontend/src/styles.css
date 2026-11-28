@@ -544,3 +544,4 @@ button { cursor: pointer; }
 .parts-table tr.is-link:hover td { background: var(--sunk); }
 .hud-station-photo { width: 220px; aspect-ratio: 16 / 9; object-fit: cover; margin-top: 10px; border-radius: 10px; border: 2px solid rgba(46, 211, 154, 0.6); animation: fade-in 0.5s ease; }
 .hud-station-photo.is-different { border-color: #ff4d63; box-shadow: 0 0 24px rgba(255, 77, 99, 0.6); }
+.camera-select { flex: 1; min-width: 0; height: 28px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: #16212e; color: #e8edf2; font-size: 13px; }

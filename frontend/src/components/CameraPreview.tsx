@@ -1,13 +1,23 @@
 // The live picture of the camera next to the sensor; it flashes when a part is photographed.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { controller } from "../controller";
-import { camera } from "../lib/camera";
+import { Camera, camera } from "../lib/camera";
 import { useStore } from "../state/store";
 import { Icon } from "./Icon";
 
 export function CameraPreview() {
   const cam = useStore((s) => s.camera);
   const box = useRef<HTMLDivElement>(null);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+
+  // every camera Windows offers (a phone in USB webcam mode appears here once it is plugged in)
+  useEffect(() => {
+    if (!cam.on) return;
+    const load = () => void Camera.list().then(setDevices);
+    load();
+    navigator.mediaDevices?.addEventListener?.("devicechange", load);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", load);
+  }, [cam.on, cam.label]);
 
   useEffect(() => {
     const host = box.current;
@@ -28,9 +38,14 @@ export function CameraPreview() {
       </div>
       <div className="camera-bar">
         <span className="camera-dot" />
-        <span className="camera-label">{cam.snapPart ? `Part ${cam.snapPart} photographed` : cam.label ?? "Camera"}</span>
-        <button className="icon-only" title="Next camera" onClick={() => void controller.toggleCamera(true)}><Icon name="back" /></button>
+        <span className="camera-label">{cam.snapPart ? `Part ${cam.snapPart} photographed` : "Live"}</span>
         <button className="icon-only" title="Camera off" onClick={() => void controller.toggleCamera()}><Icon name="close" /></button>
+      </div>
+      <div className="camera-bar">
+        <select className="camera-select" value={camera.deviceId ?? ""} title="Which camera"
+          onChange={(e) => void controller.useCamera(e.target.value)}>
+          {devices.map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</option>)}
+        </select>
       </div>
     </div>
   );

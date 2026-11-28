@@ -31,7 +31,13 @@ export class Camera {
     }
   }
 
-  async start(deviceId?: string | null): Promise<string> {
+  /** The camera in use now. */
+  get deviceId(): string | null {
+    return this.stream?.getVideoTracks()[0]?.getSettings().deviceId ?? null;
+  }
+
+  /** ``chosen``: the operator picked this camera, so an error is shown instead of falling back to another one. */
+  async start(deviceId?: string | null, chosen = false): Promise<string> {
     this.stop();
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot use a camera here (it needs localhost or https).");
     const video: MediaTrackConstraints = { width: { ideal: 1280 }, height: { ideal: 720 } };
@@ -40,7 +46,7 @@ export class Camera {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
     } catch (error) {
-      if (!deviceId) throw error;
+      if (!deviceId || chosen) throw error;
       stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });  // the saved camera is gone
     }
     this.stream = stream;
