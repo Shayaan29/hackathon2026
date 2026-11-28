@@ -27,16 +27,13 @@ def test_health_and_config(client):
     assert config["token_required"] is True
 
 
-def test_history_spectrum_drift_shapes(client):
+def test_history_shape_and_removed_views_are_gone(client):
     h = client.get("/api/history", params={"sensors": "s1", "window_s": 300}).json()
     series = h["series"][0]
     assert h["view"] == "timeseries" and 100 < len(series["values"]) <= 1200
-    c = client.get("/api/history", params={"sensors": "s1,s2", "window_s": 60}).json()
-    assert c["view"] == "compare" and len(c["series"]) == 2
-    s = client.get("/api/spectrum", params={"sensor": "s1"}).json()
-    assert len(s["freqs"]) == len(s["amps"]) > 10
-    d = client.get("/api/drift", params={"sensor": "sensor 2", "window_s": 600}).json()
-    assert d["sensor"] == "s2" and len(d["values"]) > 100
+    for path in ("/api/spectrum", "/api/drift", "/api/shift", "/api/assistant/s1"):
+        assert client.get(path, params={"sensor": "s1"}).status_code == 404, path
+    assert client.post("/api/demo/tap", headers=TOKEN, json={}).status_code in (404, 405)
 
 
 def test_unknown_sensor_is_a_clear_error(client):
@@ -49,37 +46,6 @@ def test_tools(client):
     assert data["sensor"] == "s1" and data["latest"] is not None
     analysis = client.post("/api/tools/analyze", json={"sensor": "s2"}).json()
     assert analysis["observations"]
-
-
-def test_change_setting_needs_token_and_confirmation(client):
-    body = {"sensor": "s1", "name": "averaging", "value": "64", "confirmed": True}
-    assert client.post("/api/tools/change_setting", json=body).status_code == 401
-    unconfirmed = client.post("/api/tools/change_setting", headers=TOKEN,
-                              json={**body, "confirmed": False}).json()
-    assert unconfirmed["ok"] is False
-    done = client.post("/api/tools/change_setting", headers=TOKEN, json=body).json()
-    assert done == {"ok": True, "sensor": "s1", "name": "averaging", "old": 16, "new": 64}
-    bad = client.post("/api/tools/change_setting", headers=TOKEN,
-                      json={**body, "value": "99999"}).json()
-    assert bad["ok"] is False and "at most" in bad["error"]
-
-
-def test_demo_tap_produces_event_on_websocket(client):
-    with client.websocket_connect("/ws/cockpit") as ws:
-        hello = ws.receive_json()
-        assert hello["type"] == "hello"
-        assert client.post("/api/demo/tap", headers=TOKEN, json={"sensor": "s1"}).json()["ok"]
-        deadline = time.time() + 25  # baseline needs ~20 s of data after start
-        seen = set()
-        while time.time() < deadline:
-            message = ws.receive_json()
-            seen.add(message["type"])
-            if message["type"] == "event" and message["kind"] == "vibration":
-                assert message["related_sensors"] == ["s2"]
-                break
-        else:
-            pytest.fail(f"no vibration event; saw {seen}")
-        assert "samples" in seen
 
 
 def test_phone_socket_says_hello(client):
@@ -115,9 +81,8 @@ def test_client_secret_request(settings):
     assert session["type"] == "realtime" and session["model"] == settings.realtime_model
     essential = session_updates(settings)[0]["session"]
     assert {t["name"] for t in essential["tools"]} == {
-        "get_data", "analyze", "show_chart", "stage_control", "change_setting",
-        "suggest_settings", "create_report", "make_chart", "explain_chart", "show_shift",
-        "list_incidents", "investigate_incident", "search_manual"}
+        "get_data", "analyze", "show_chart", "stage_control", "get_part_check", "get_parts", "create_report",
+        "make_chart", "explain_chart", "search_manual"}
     assert essential["audio"]["input"]["turn_detection"] is None
 
 

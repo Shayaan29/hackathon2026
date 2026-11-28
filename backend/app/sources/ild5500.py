@@ -491,7 +491,3 @@ class Ild5500Source(SensorSource):
             "intensity_percent": self.intensity_percent,
             "temperature_c": self.temperature_c,
         }
-
-    def apply_setting(self, name: str, value: Any) -> None:
-        log.info("%s: the setting %s=%r is not sent to a real sensor, change it in the sensor's web page",
-                 self.cfg.id, name, value)

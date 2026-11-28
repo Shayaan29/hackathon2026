@@ -35,17 +35,18 @@ export function ago(t: number, now = Date.now() / 1000): string {
 }
 
 export const KIND_LABEL: Record<EventKind, string> = {
-  vibration: "Vibration",
-  noise: "Noise",
-  drift: "Drift",
   out_of_range: "Out of tolerance",
   invalid: "Invalid readings",
   wrong_part: "Different part",
+  jam: "Possible jam",
+  double_feed: "Possible double feed",
+  trend: "Height trend",
 };
 
 /** Short names for the alert lines on the timelines. */
 export const KIND_SHORT: Record<string, string> = {
-  vibration: "knock", noise: "noise", drift: "drift", out_of_range: "out of tol.", invalid: "no signal", wrong_part: "other part",
+  out_of_range: "out of tol.", invalid: "no signal", wrong_part: "other part", jam: "jam", double_feed: "double feed",
+  trend: "trend",
 };
 
 /**

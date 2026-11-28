@@ -45,9 +45,27 @@ class SensorSource(ABC):
         """What the cockpit shows about the connection. Only live sources have something to say."""
         return {}
 
-    def apply_setting(self, name: str, value: Any) -> None:
-        """Push a changed setting to the device. The simulator models a few."""
 
-    def inject(self, kind: str, now: float, **params: Any) -> dict[str, Any]:
-        """Demo events. Only the simulator supports them."""
-        raise SourceError(f"{self.kind} sources do not support demo events")
+
+class UnavailableSource(SensorSource):
+    """A sensor whose connection could not even be set up, for example a wrong address in the sensor file.
+
+    It delivers nothing and says why, so the cockpit shows the problem instead of numbers. There is no dummy
+    data behind it: every number on the screen comes from the real sensor."""
+
+    kind = "unavailable"
+
+    def __init__(self, cfg: SensorConfig, rate_hz: int, error: str) -> None:
+        super().__init__(cfg, rate_hz)
+        self.error = error
+
+    def read(self, now: float) -> tuple[np.ndarray, float]:
+        return np.empty(0), now
+
+    def status(self) -> dict[str, Any]:
+        port = self.cfg.source.get("port")
+        return {"kind": self.cfg.source_type, "state": "offline", "message": self.error,
+                "host": str(self.cfg.source.get("host") or ""),
+                "port": int(port) if str(port or "").isdigit() else 0,
+                "rate_hz": None, "article": None, "serial": None, "samples": 0, "invalid_percent": None,
+                "last_status": None, "reference_mm": None}

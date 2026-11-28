@@ -2,7 +2,8 @@
 
 Runs inside the FastAPI event loop. Every tick it pulls new samples from each
 source, stores them, streams a peak-preserving thinned copy to the cockpit,
-runs the alert rules and publishes status and events.
+runs the alert rules, the part check and the quality station, and publishes
+status, events and every finished part.
 """
 
 from __future__ import annotations
@@ -22,34 +23,19 @@ from .analysis import decimate_minmax, robust_sigma, round_or_none, to_json_list
 from .buffer import SensorBuffer
 from .config import Settings
 from .detection import Detector, Event
-from .geometry import track_angle
 from .hub import COCKPIT, PHONE, Hub
-from .incidents import IncidentStore
-from .ingest import Recording
 from .partcheck import PartCheck
-from .sources import SensorSource, SimulatedSensor, SourceError, create_source
-from .sources.recording import RecordingSource
-from .sources.simulator import make_history
-
-# Putting a part under the sensor or taking it away moves the signal in one jump, and the rules read that jump as a
-# vibration. These alerts wait a second: when a level jump explains them, they are dropped and kept out of the status.
-SWAP_QUIET_KINDS = frozenset({"vibration", "noise", "drift"})
-SWAP_HOLD_BACK_S = 1.0
-
-SNAPSHOT_BEFORE_S = 3.0  # full-rate data kept around every alert, for zooming in later
-SNAPSHOT_AFTER_S = 3.5
-SNAPSHOTS_PER_SENSOR = 80
-
+from .sources import SensorSource, UnavailableSource, create_source
+from .station import Station
 
 log = logging.getLogger("cockpit.engine")
 
-DEMO_KINDS = ("tap", "vibration", "drift", "drift_stop", "noise", "dropout", "misconfigure", "dent", "reset")
 _NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
                  "eins": "1", "zwei": "2", "drei": "3", "vier": "4", "fünf": "5"}
 
 
 class EngineError(ValueError):
-    """A request the engine cannot fulfil (unknown sensor, invalid setting...)."""
+    """A request the engine cannot fulfil, such as an unknown sensor."""
 
 
 class Engine:
@@ -69,49 +55,33 @@ class Engine:
         self.source_info: dict[str, dict[str, Any]] = {}
         self.detector = Detector(settings.sensors, settings.detection, self.rate_hz)
         # the taught part of each sensor lives next to the manuals, in backend/data
-        self._held: list[tuple[float, Event]] = []
-        self._muted: dict[str, set[str]] = {}   # alerts dropped as part swaps, hidden until their rule clears
         self.partcheck = PartCheck(settings.sensors, settings.knowledge_dir.parent / "part_reference.json")
+        # every part that rested under a sensor, kept in backend/data as well
+        self.station = Station(settings.sensors, self.partcheck, settings.knowledge_dir.parent / "part_log.jsonl",
+                               on_part=self._announce_part)
         self.events: deque[Event] = deque(maxlen=300)
-        self.values: dict[str, dict[str, Any]] = {
-            s.id: {name: spec.default for name, spec in s.settings.items()} for s in settings.sensors
-        }
         self._pending = {s.id: np.empty(0) for s in settings.sensors}
         self._pending_t_end: dict[str, float] = {}
         self._bucket = max(1, int(round(self.rate_hz / (self.display_points_per_s / 2))))
         self._read_errors: dict[str, str] = {}
         self._task: asyncio.Task[None] | None = None
         self.started_at = time.time()
-        # earlier incidents of the shift (simulator only) and full-rate snapshots per sensor
-        self.history_events: list[Event] = []
-        self.snapshots: dict[str, list[tuple[float, float, np.ndarray]]] = {s.id: [] for s in settings.sensors}
-        self._snapshot_due: list[tuple[float, Event]] = []
-        # a recording played in place of the simulator; live alerts are off while it plays
-        self.recording: dict[str, Any] | None = None
-        self.live_detection = True
-        self.incidents = IncidentStore()
 
     # -- lifecycle ---------------------------------------------------------
 
     def start_sources(self) -> None:
         now = time.time()
-        SimulatedSensor.part_omega = 2 * math.pi * self.settings.engine.part_rpm / 60.0
-        count = len(self.settings.sensors)
-        for index, cfg in enumerate(self.settings.sensors):
-            info: dict[str, Any] = {"type": cfg.source_type, "fallback": False, "error": None}
+        for cfg in self.settings.sensors:
+            info: dict[str, Any] = {"type": cfg.source_type, "error": None}
             try:
-                source = create_source(cfg, self.rate_hz)
+                source: SensorSource = create_source(cfg, self.rate_hz)
                 source.start()
-            except Exception as exc:  # noqa: BLE001 - any failure falls back to dummy data
-                log.error("%s: %s source failed (%s); using the simulator instead",
-                          cfg.id, cfg.source_type, exc)
-                source = SimulatedSensor(cfg, self.rate_hz)
-                info.update(type="simulator", fallback=True, error=str(exc))
-            if isinstance(source, SimulatedSensor):
-                source.track_angle = track_angle(index, count)
+            except Exception as exc:  # noqa: BLE001 - shown in the cockpit instead of numbers
+                log.error("%s: the %s source could not start: %s", cfg.id, cfg.source_type, exc)
+                source = UnavailableSource(cfg, self.rate_hz, f"Cannot start the sensor connection: {exc}")
+                info["error"] = str(exc)
             self.sources[cfg.id] = source
             self.source_info[cfg.id] = info
-        self._load_shift_history(now)
         for cfg in self.settings.sensors:
             history = self.sources[cfg.id].backfill(self.settings.engine.backfill_s, now)
             if history is not None:
@@ -119,109 +89,12 @@ class Engine:
                 self.buffers[cfg.id].append(values, t_end)
             log.info("%s: %s source ready", cfg.id, self.source_info[cfg.id]["type"])
 
-    def _load_shift_history(self, now: float) -> None:
-        """Simulator only: the earlier part of the shift, so there is a whole shift to explore.
-        Real sensors never get invented history."""
-        eng = self.settings.engine
-        sims = [s for s in self.sources.values() if isinstance(s, SimulatedSensor)]
-        if len(sims) != len(self.sources) or eng.slow_buffer_s <= eng.backfill_s + 60:
-            return
-        end = now - eng.backfill_s
-        start = now - eng.slow_buffer_s + 2
-        fixtures = {s.id: s.fixture for s in self.settings.sensors}
-        history = make_history(sims, fixtures, start, end)
-        for sid, (t, mean, lo, hi) in history["seconds"].items():
-            self.buffers[sid].append_slow(t, mean, lo, hi)
-        for i, e in enumerate(history["events"]):
-            self.history_events.append(Event(id=f"H{i + 1}", sensor=e["sensor"], kind=e["kind"],
-                                             severity=e["severity"], t=e["t"], numbers=e["numbers"],
-                                             summary=e["summary"], forecast_min=e.get("forecast_min"),
-                                             related_sensors=e.get("related_sensors", [])))
-        for sid, snaps in history["snapshots"].items():
-            self.snapshots[sid].extend(snaps)
-        log.info("shift history: %d earlier incidents over %.1f h", len(self.history_events),
-                 (end - start) / 3600)
-
     def _stop_sources(self) -> None:
         for source in self.sources.values():
             try:
                 source.stop()
             except Exception:  # noqa: BLE001
                 log.exception("error while stopping a source")
-
-    def _reset_live_state(self) -> None:
-        """Empty every live buffer, alert state and history so no earlier data mixes in."""
-        eng = self.settings.engine
-        self.buffers = {s.id: SensorBuffer(self.rate_hz, eng.fast_buffer_s, eng.slow_buffer_s)
-                        for s in self.settings.sensors}
-        self.detector = Detector(self.settings.sensors, self.settings.detection, self.rate_hz)
-        self.partcheck.reset()
-        self._held = []
-        self._muted = {}
-        self.events.clear()
-        self.history_events = []
-        self.snapshots = {s.id: [] for s in self.settings.sensors}
-        self._snapshot_due = []
-        self._pending = {s.id: np.empty(0) for s in self.settings.sensors}
-        self._pending_t_end = {}
-        self.sources = {}
-        self.source_info = {}
-
-    def adopt_recording(self, rec: Recording, source: dict[str, Any]) -> dict[str, Any]:
-        """Play a recording in the cockpit's sensor slots instead of the simulator.
-
-        Recording sensors fill the configured slots in order. A slot without a
-        recording column stays silent (NaN), it is never filled with invented data.
-        Live alerts are switched off while a recording plays, so every incident
-        comes from the whole-file analysis and none is counted twice.
-        The caller stores this recording's incidents before calling, and they are
-        kept here: the broadcast below reports their count."""
-        self._stop_sources()
-        self._reset_live_state()
-        now = time.time()
-        slots: list[dict[str, Any]] = []
-        for index, cfg in enumerate(self.settings.sensors):
-            if index < len(rec.sensors):
-                column = rec.sensors[index]
-                values = rec.values[column["id"]]
-                info = {"type": "recording", "fallback": False, "error": None, "file": rec.name,
-                        "column": column["file_column"], "label": column["name"]}
-            else:
-                values = np.full(self.rate_hz, np.nan)
-                info = {"type": "recording", "fallback": False, "error": None, "file": rec.name,
-                        "column": None, "label": None, "note": "no recording column for this sensor"}
-            playback = RecordingSource(cfg, self.rate_hz, values, label=info["label"] or "")
-            playback.start()
-            history = playback.backfill(self.settings.engine.backfill_s, now)
-            self.sources[cfg.id] = playback
-            self.source_info[cfg.id] = info
-            if history is not None:
-                self.buffers[cfg.id].append(history[0], history[1])
-            slots.append(info)
-        self.live_detection = False
-        # sample 0 of the file is played at started_at; the twin uses it to put its spot on the part
-        self.recording = {"name": rec.name, "rate_hz": rec.rate_hz, "duration_s": rec.duration_s,
-                          "rows": rec.rows, "source": source, "slots": slots, "started_at": now,
-                          "hidden_columns": max(0, len(rec.sensors) - len(self.settings.sensors))}
-        log.info("recording %s is playing in %d sensor slots (%.1f s)", rec.name,
-                 min(len(rec.sensors), len(self.settings.sensors)), rec.duration_s)
-        self.hub.broadcast({"type": "recording", **self.recording_public()})
-        return self.recording_public()
-
-    def restore_simulator(self) -> None:
-        """Back to the configured sensors (simulator or real sources), with live alerts on."""
-        self._stop_sources()
-        self._reset_live_state()
-        self.recording = None
-        self.live_detection = True
-        self.incidents.clear()
-        self.start_sources()
-        self.hub.broadcast({"type": "recording", "active": False})
-
-    def recording_public(self) -> dict[str, Any]:
-        if self.recording is None:
-            return {"active": False, "incidents": 0}
-        return {"active": True, **self.recording, "incidents": len(self.incidents.items)}
 
     async def start(self) -> None:
         self.start_sources()
@@ -250,22 +123,16 @@ class Engine:
                 self.flush_display()
                 last_display = now
             if now - last_eval >= self.settings.detection.eval_interval_s:
-                if self.live_detection:
-                    self.partcheck.watch_swaps(self.buffers, now)
-                    for event in self.detector.evaluate(self.buffers, now):
-                        if event.kind in SWAP_QUIET_KINDS and self.partcheck.watches(event.sensor):
-                            self._held.append((now + SWAP_HOLD_BACK_S, event))     # decided a moment later
-                            self._mute(event, True)
-                        else:
-                            self.publish_event(event)
-                    self._release_held(now)
-                    for event in self.partcheck.evaluate(self.buffers, now):
-                        self.publish_event(event)
+                for event in self.detector.evaluate(self.buffers, now):
+                    self.publish_event(event)
+                for event in self.partcheck.evaluate(self.buffers, now):
+                    self.publish_event(event)
+                for event in self.station.evaluate(self.buffers, now):
+                    self.publish_event(event)
                 last_eval = now
             if now - last_status >= self.status_interval_s:
                 self.hub.broadcast(self.status_message())
                 last_status = now
-            self._take_snapshots(now)
             next_tick += self.tick_s
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
@@ -308,27 +175,6 @@ class Engine:
                 "values": to_json_list(values, 3),
             })
 
-    def _take_snapshots(self, now: float) -> None:
-        """Keep the full-rate signal around each alert once it is complete."""
-        while self._snapshot_due and self._snapshot_due[0][0] <= now:
-            _, event = self._snapshot_due.pop(0)
-            for sid in [event.sensor, *event.related_sensors]:
-                if sid not in self.buffers:
-                    continue
-                t0, dt, values = self.buffers[sid].fast_range(event.t - SNAPSHOT_BEFORE_S,
-                                                              event.t + SNAPSHOT_AFTER_S)
-                if values.size:
-                    snaps = self.snapshots[sid]
-                    snaps.append((t0, dt, values.copy()))
-                    del snaps[:-SNAPSHOTS_PER_SENSOR]
-
-    def all_events(self, since: float | None = None, sensor: str | None = None) -> list[dict[str, Any]]:
-        """Earlier incidents of the shift and live alerts, oldest first."""
-        out = [e for e in [*self.history_events, *self.events]
-               if (since is None or e.t >= since)
-               and (sensor is None or e.sensor == sensor or sensor in e.related_sensors)]
-        return [{**e.to_message(), "historic": e.id.startswith("H")} for e in out]
-
     def _enrich(self, event: Event) -> None:
         """Add what only the live source knows to an alert: why the readings were invalid."""
         if event.kind != "invalid":
@@ -344,53 +190,34 @@ class Engine:
                          f"second, {sensor_specs.reasons_text(reasons)}. "
                          f"{sensor_specs.invalid_hint(main, cfg.spec)}")
 
-    def _mute(self, event: Event, on: bool) -> None:
-        for sid in (event.sensor, *event.related_sensors):
-            kinds = self._muted.setdefault(sid, set())
-            if on:
-                kinds.add(event.kind)
-            else:
-                kinds.discard(event.kind)
-
-    def _release_held(self, now: float) -> None:
-        keep: list[tuple[float, Event]] = []
-        for due, event in self._held:
-            if due > now:
-                keep.append((due, event))
-            elif self.partcheck.swapped_since(event.sensor, event.t - SWAP_HOLD_BACK_S):
-                log.info("%s: %s alert dropped, the level jumped (something was put under the sensor or taken away)",
-                         event.sensor, event.kind)
-            else:
-                self._mute(event, False)
-                self.publish_event(event)
-        self._held = keep
-        for sid, kinds in self._muted.items():       # forget a dropped alert once its rule has cleared
-            kinds &= set(self.detector.active_kinds(sid)) | {e.kind for _, e in keep if sid in (e.sensor, *e.related_sensors)}
-
     def publish_event(self, event: Event) -> None:
         self._enrich(event)
-        self._snapshot_due.append((event.t + SNAPSHOT_AFTER_S + 0.3, event))
         self.events.append(event)
         log.info("event %s %s: %s", event.kind, event.sensor, event.summary)
         self.hub.broadcast(event.to_message(), kinds=(COCKPIT, PHONE))
 
+    def _announce_part(self, sid: str, part: dict[str, Any]) -> None:
+        """A part left the sensor: the cockpit and the phones add it to their part lists."""
+        self.hub.broadcast({"type": "part", "sensor": sid, "part": part,
+                            "station": self.station.public(sid, time.time())}, kinds=(COCKPIT, PHONE))
+
     # -- state for the UI --------------------------------------------------
 
     def active_kinds(self, sid: str) -> list[str]:
-        """Every alert that is on for a sensor: the signal rules and the part check."""
-        muted = self._muted.get(sid, set())
-        kinds = [kind for kind in self.detector.active_kinds(sid) if kind not in muted]
-        return [*kinds, "wrong_part"] if self.partcheck.is_different(sid) else kinds
+        """Every alert that is on for a sensor: the signal rules, the part check and the quality station."""
+        kinds = self.detector.active_kinds(sid)
+        if self.partcheck.is_different(sid):
+            kinds = [*kinds, "wrong_part"]
+        return [*kinds, *self.station.active_kinds(sid)]
 
     def sensor_state(self, sid: str) -> str:
         active = self.active_kinds(sid)
-        if "out_of_range" in active or ("drift" in active
-                                        and self.detector.state[sid].drift_severity == "critical"):
+        if "out_of_range" in active:
             return "critical"
         return "warning" if active else "ok"
 
     def _live_status(self, sid: str) -> dict[str, Any] | None:
-        """Connection state of a real sensor (address, rate, what is wrong); None for dummy data."""
+        """Connection state of the sensor (address, rate, what is wrong)."""
         source = self.sources.get(sid)
         if source is None:
             return None
@@ -407,22 +234,20 @@ class Engine:
             _, _, last_s = buf.fast_window(1.0)
             ok = last_s[np.isfinite(last_s)]
             baseline = self.detector.baseline(cfg.id)
-            metrics = self.detector.last_metrics.get(cfg.id)
             sensors[cfg.id] = {
                 "latest": round_or_none(float(ok[-1]) if ok.size else None, 2),
                 "mean_1s": round_or_none(float(ok.mean()) if ok.size else None, 2),
                 "noise": round_or_none(baseline, 3),
-                "noise_ratio": round_or_none(metrics.ratio_noise if metrics else None, 2),
                 "state": self.sensor_state(cfg.id),
                 "active": self.active_kinds(cfg.id),
                 "part": self.partcheck.public(cfg.id),
+                "station": self.station.public(cfg.id, time.time()),
                 "source": self.source_info.get(cfg.id, {}),
                 "live": self._live_status(cfg.id),
                 "read_error": self._read_errors.get(cfg.id),
-                "settings": dict(self.values[cfg.id]),
             }
         return {"type": "status", "t": time.time(), "uptime_s": round(time.time() - self.started_at),
-                "clients": self.hub.counts(), "sensors": sensors, "recording": self.recording_public()}
+                "clients": self.hub.counts(), "sensors": sensors}
 
     def recent_events(self, limit: int = 50, since: float | None = None,
                       sensor: str | None = None) -> list[dict[str, Any]]:
@@ -458,66 +283,6 @@ class Engine:
                 if cfg.id == f"s{digit}" or cfg.name.lower().endswith(f" {digit}"):
                     return cfg.id
         raise EngineError(f"unknown sensor {text!r}; known sensors: {', '.join(ids)}")
-
-    def change_setting(self, sensor: str, name: str, value: Any) -> dict[str, Any]:
-        sid = self.resolve_sensor(sensor)
-        cfg = self.settings.sensor(sid)
-        spec = cfg.settings.get(name)
-        if spec is None:
-            raise EngineError(f"{cfg.name} has no setting {name!r}; available: {', '.join(cfg.settings)}")
-        try:
-            new_value = spec.validate(value)
-        except ValueError as exc:
-            raise EngineError(str(exc)) from exc
-        old_value = self.values[sid].get(name)
-        self.values[sid][name] = new_value
-        self.sources[sid].apply_setting(name, new_value)
-        if name == "averaging":
-            # noise level changes on purpose: learn the new normal from fresh data
-            self.detector.relearn(sid, time.time())
-        message = {"type": "setting_changed", "sensor": sid, "name": name,
-                   "old": old_value, "new": new_value, "t": time.time()}
-        self.hub.broadcast(message)
-        log.info("%s: %s %s -> %s", sid, name, old_value, new_value)
-        return {"ok": True, "sensor": sid, "name": name, "old": old_value, "new": new_value}
-
-    def inject(self, kind: str, sensor: str | None = None, **params: Any) -> dict[str, Any]:
-        if kind not in DEMO_KINDS:
-            raise EngineError(f"unknown demo event {kind!r}; use one of {', '.join(DEMO_KINDS)}")
-        now = time.time()
-        if kind == "reset":
-            for source in self.sources.values():
-                if isinstance(source, SimulatedSensor):
-                    source.inject("reset", now)
-            for cfg in self.settings.sensors:  # back to the configured settings
-                for name, spec in cfg.settings.items():
-                    if self.values[cfg.id].get(name) != spec.default:
-                        self.change_setting(cfg.id, name, spec.default)
-            return {"ok": True, "kind": kind}
-        sid = self.resolve_sensor(sensor)
-        if kind == "misconfigure":
-            # demo: someone left the sensor on a too-low averaging, so it is noisy
-            return {"ok": True, "kind": kind,
-                    **self.change_setting(sid, "averaging", params.get("value", 2))}
-        try:
-            if kind == "tap":
-                fixture = self.settings.sensor(sid).fixture
-                hit = []
-                for cfg in self.settings.sensors:
-                    if cfg.fixture != fixture:
-                        continue
-                    scale = 1.0 if cfg.id == sid else 0.8
-                    params_i = dict(params)
-                    params_i["amplitude"] = float(params.get("amplitude", 15.0)) * scale
-                    # a knock travels through steel in microseconds: both sensors feel it at once
-                    params_i["delay_s"] = 0.0
-                    self.sources[cfg.id].inject("vibration", now, **params_i)
-                    hit.append(cfg.id)
-                return {"ok": True, "kind": kind, "sensors": hit}
-            result = self.sources[sid].inject(kind, now, **params)
-        except SourceError as exc:
-            raise EngineError(str(exc)) from exc
-        return {"ok": True, "kind": kind, "sensor": sid, **result}
 
     def noise_level(self, sid: str, seconds: float = 5.0) -> float | None:
         _, _, values = self.buffers[sid].fast_window(seconds)

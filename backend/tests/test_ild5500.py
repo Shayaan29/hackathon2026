@@ -44,7 +44,7 @@ def ild_config(port: int, **source: object) -> SensorConfig:
 
 def config_with(options: dict[str, object]) -> SensorConfig:
     return SensorConfig(id="s1", name="ILD5500", model="optoNCDT ILD5500-50", unit="µm", nominal=0.0,
-                        tolerance=Tolerance(-50.0, 50.0), fixture="fixture-a", source=options, settings={})
+                        tolerance=Tolerance(-50.0, 50.0), source=options)
 
 
 class FakeSensor:
@@ -432,10 +432,9 @@ def test_addresses_come_from_the_env_file_or_the_default(monkeypatch: pytest.Mon
         expand_env("${NOT_SET_ANYWHERE}", "sensors[0].source.host")
 
 
-def test_the_live_sensor_file_loads_and_can_be_forced_back_to_dummy_data(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_live_sensor_file_loads_and_reads_its_address_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LIVE_SENSOR_HOST", raising=False)
     monkeypatch.delenv("LIVE_SENSOR_PORT", raising=False)
-    monkeypatch.setenv("SOURCE_OVERRIDE", "")
     settings = load_settings(BACKEND / "config" / "sensors.live.yaml")
     assert [s.source_type for s in settings.sensors] == ["ild5500"]
     source = create_source(settings.sensors[0], settings.engine.analysis_rate_hz)
@@ -445,8 +444,24 @@ def test_the_live_sensor_file_loads_and_can_be_forced_back_to_dummy_data(monkeyp
     settings = load_settings(BACKEND / "config" / "sensors.live.yaml")
     source = create_source(settings.sensors[0], settings.engine.analysis_rate_hz)
     assert (source.host, source.port) == ("192.168.7.7", 5000)              # type: ignore[attr-defined]
-    monkeypatch.setenv("SOURCE_OVERRIDE", "simulator")
-    assert load_settings(BACKEND / "config" / "sensors.live.yaml").sensors[0].source_type == "simulator"
+
+
+def test_the_cockpit_never_falls_back_to_simulated_data(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """A sensor file with a broken connection shows the problem; no dummy numbers appear on the screen."""
+    from app.engine import Engine
+    from app.hub import Hub
+    from app.sources import UnavailableSource
+
+    monkeypatch.setenv("LIVE_SENSOR_PORT", "not-a-port")
+    monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path / "knowledge"))
+    settings = load_settings(BACKEND / "config" / "sensors.live.yaml")
+    engine = Engine(settings, Hub())
+    engine.start_sources()
+    source = engine.sources["s1"]
+    assert isinstance(source, UnavailableSource)
+    live = engine.status_message()["sensors"]["s1"]["live"]
+    assert live["state"] == "offline" and "port" in live["message"]
+    assert source.read(0.0)[0].size == 0
 
 
 # -- the check script ------------------------------------------------------------------------------------------------

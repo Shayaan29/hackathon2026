@@ -1,4 +1,4 @@
-"""HTTP routes for the manuals and the recommendations. Mounted by main.create_app.
+"""HTTP routes for the manuals. Mounted by main.create_app.
 
 Reading what is loaded and what was already prepared is open, like the rest of the
 read-only API. Everything that writes a file or spends API credit needs the cockpit
@@ -15,10 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import incident_tools
-from .engine import Engine
 from .knowledge import KnowledgeBase, KnowledgeError, clean_name, parse_document
-from .recommend import Recommender
 
 
 class SearchRequest(BaseModel):
@@ -26,22 +23,28 @@ class SearchRequest(BaseModel):
     k: int = 5
 
 
-class RecommendRequest(BaseModel):
-    force: bool = False
+MANUAL_RULE = ("Answer only from these passages and name the document and page. If they do not answer the question, "
+               "say the loaded manuals do not cover it. Speak only numbers that appear in the passages.")
 
 
-def add_routes(app: FastAPI, kb: KnowledgeBase, recommender: Recommender, engine: Engine,
-               require_token: Callable[..., None]) -> None:
+async def search_manual(kb: KnowledgeBase, query: str, limit: int = 4) -> dict[str, Any]:
+    query = " ".join(str(query or "").split())
+    if not query:
+        return {"ok": False, "error": "Give a question or a few keywords to look up."}
+    if not kb.documents:
+        return {"ok": True, "documents": 0, "passages": [],
+                "message": "No manual is loaded. Add manuals in the Manuals panel first."}
+    hits = await kb.search(query, k=limit)
+    return {"ok": True, "speak_rule": MANUAL_RULE, "query": query, "documents": len(kb.documents),
+            "passages": [{"id": f"P{n}", **hit.passage.public(hit.score)} for n, hit in enumerate(hits, 1)],
+            "message": "" if hits else "Nothing in the loaded manuals matches this."}
+
+
+def add_routes(app: FastAPI, kb: KnowledgeBase, require_token: Callable[..., None]) -> None:
     background: set[asyncio.Future[Any]] = set()
 
-    def find(incident_id: str) -> dict[str, Any]:
-        incident = engine.incidents.get(incident_id)
-        if incident is None:
-            raise HTTPException(status_code=404, detail=f"no incident {incident_id!r} in the loaded recording")
-        return incident
-
     def full_status() -> dict[str, Any]:
-        return {**kb.status(), **recommender.status()}
+        return {**kb.status(), "ai": bool(kb.client and kb.client.enabled)}
 
     # -- manuals -------------------------------------------------------------------
 
@@ -93,20 +96,8 @@ def add_routes(app: FastAPI, kb: KnowledgeBase, recommender: Recommender, engine
         hits = await kb.search(req.query, k=req.k)
         return {"hits": [h.passage.public(h.score) | {"via": h.via} for h in hits]}
 
-    # -- recommendations -------------------------------------------------------------
-
-    @app.get("/api/incidents/{incident_id}/recommendations")
-    async def recommendations_read(incident_id: str) -> dict[str, Any]:
-        """What was already prepared. Never starts a model call."""
-        result = recommender.cached(find(incident_id))
-        return result or {"status": "none", "incident": incident_id, "ai": recommender.client.enabled}
-
-    @app.post("/api/incidents/{incident_id}/recommendations", dependencies=[Depends(require_token)])
-    async def recommendations_make(incident_id: str, req: RecommendRequest | None = None) -> dict[str, Any]:
-        return await recommender.recommend(find(incident_id), force=bool(req and req.force))
-
     # -- copilot tool -------------------------------------------------------------------
 
     @app.post("/api/tools/search_manual", dependencies=[Depends(require_token)])
     async def tool_search_manual(req: SearchRequest) -> dict[str, Any]:
-        return await incident_tools.search_manual(kb, req.query, limit=max(1, min(req.k, 6)))
+        return await search_manual(kb, req.query, limit=max(1, min(req.k, 6)))

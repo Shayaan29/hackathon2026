@@ -64,6 +64,31 @@ function Dial({ sensor, side }: { sensor: SensorInfo; side: "left" | "right" }) 
   );
 }
 
+/** The quality station counter: every part that rested under the sensor, as it happens. */
+function StationHud({ sensor }: { sensor: SensorInfo }) {
+  const station = useStore((s) => s.status?.sensors[sensor.id]?.station);
+  if (!station || (!station.ready && station.parts === 0)) return null;
+  const shown = shownFor(sensor);
+  const last = station.last;
+  const height = last?.height_um ?? null;
+  const scale = shown.display?.scale ?? 1;
+  return (
+    <div className="hud-station">
+      <span className="hud-station-label">Parts</span>
+      <span className="hud-station-count" key={station.parts}>{station.parts}</span>
+      <span className="hud-station-split">
+        <span className="is-good">{station.good} good</span>
+        <span className={station.different ? "is-bad" : ""}>{station.different} different</span>
+      </span>
+      {last && (
+        <span className={`hud-station-last is-${last.verdict}`} key={`last-${last.number}`}>
+          Part {last.number}: {height !== null ? `${(height * scale).toFixed(shown.display ? 3 : 1)} ${shown.unit} high` : last.verdict}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function useElapsed(since: number): string {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -108,6 +133,7 @@ export function MissionHud() {
       </div>
       <div className="hud-dials hud-dials-left">{sensors.slice(0, half).map((s) => <Dial key={s.id} sensor={s} side="left" />)}</div>
       <div className="hud-dials hud-dials-right">{sensors.slice(half).map((s) => <Dial key={s.id} sensor={s} side="right" />)}</div>
+      {sensors[0] && <div className={`hud-station-wrap ${sensors.length > 1 ? "is-low" : ""}`}><StationHud sensor={sensors[0]} /></div>}
       {alert && (
         <div className={`hud-alert sev-${alert.severity}`} key={alert.id}>
           <span className="hud-alert-kind">{KIND_LABEL[alert.kind]} on {config.sensors.find((s) => s.id === alert.sensor)?.name}</span>

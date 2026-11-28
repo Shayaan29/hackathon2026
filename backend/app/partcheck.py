@@ -27,7 +27,7 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -50,10 +50,6 @@ DEFAULT_MARGIN_UM = 100.0
 MARGIN_RANGE_UM = (10.0, 5000.0)
 EMPTY_BAND_UM = 150.0       # how close to the taught empty plate still counts as empty
 MIN_SAMPLES = 5
-SHIFT_SPAN_S = 2.0          # a part swap shows as a jump of the level within this stretch ...
-SHIFT_CHUNK_S = 0.25
-SHIFT_UM = 150.0            # ... of at least this size
-SWAP_HOLD_S = 3.0           # vibration, noise and drift alerts stay quiet this long after a jump
 
 
 class PartCheckError(ValueError):
@@ -107,24 +103,6 @@ class _Track:
     last_alert: float = -math.inf
     reading: Reading | None = None
     alerts: int = 0
-    last_shift: float = -math.inf
-
-
-def level_shift(buf: SensorBuffer) -> bool:
-    """True when the signal level jumped (a part was put on or taken away) in the last couple of seconds.
-
-    The medians of short chunks are compared, so a zero-mean vibration never counts as a jump."""
-    _, dt, values = buf.fast_window(SHIFT_SPAN_S)
-    chunk = max(int(round(SHIFT_CHUNK_S / dt)), 1) if dt > 0 else 0
-    if chunk == 0 or values.size < 2 * chunk:
-        return False
-    medians = []
-    for i in range(0, values.size - chunk + 1, chunk):
-        part = values[i:i + chunk]
-        part = part[np.isfinite(part)]
-        if part.size >= MIN_SAMPLES:
-            medians.append(float(np.median(part)))
-    return len(medians) >= 2 and max(medians) - min(medians) > SHIFT_UM
 
 
 def measure(buf: SensorBuffer, seconds: float) -> Reading:
@@ -188,7 +166,7 @@ class PartCheck:
     # -- state -------------------------------------------------------------
 
     def reset(self) -> None:
-        """Forget what was seen (not what was taught), for example when a recording replaces the live data."""
+        """Forget what was seen (not what was taught)."""
         with self._lock:
             for track in self.tracks.values():
                 track.state, track.pending, track.latched_um, track.reading = "waiting", None, None, None
@@ -201,12 +179,16 @@ class PartCheck:
         track = self.tracks.get(sid)
         return bool(track and track.state == "different")
 
-    def _classify(self, track: _Track, position: float) -> str:
+    @staticmethod
+    def empty_band(track: _Track) -> float:
+        """How close to the taught empty plate a reading must be to count as the empty plate."""
+        return max(EMPTY_BAND_UM, track.reference.margin_um if track.reference else 0.0)
+
+    def classify(self, track: _Track, position: float) -> str:
         ref = track.reference
         if ref is not None and abs(position - ref.center_um) <= ref.half_width_um:
             return "match"
-        if track.empty_um is not None and abs(position - track.empty_um) <= max(
-                EMPTY_BAND_UM, ref.margin_um if ref else 0.0):
+        if track.empty_um is not None and abs(position - track.empty_um) <= self.empty_band(track):
             return "empty"
         return "different" if ref is not None else "waiting"
 
@@ -273,27 +255,6 @@ class PartCheck:
 
     # -- watching ----------------------------------------------------------
 
-    def watches(self, sid: str) -> bool:
-        """Level jumps are watched on every sensor in micrometres, with or without a taught part."""
-        return self.supported(sid)
-
-    def swapping(self, sid: str, now: float) -> bool:
-        """True while something is put under the sensor or taken away: the level jumped a moment ago."""
-        track = self.tracks.get(sid)
-        return bool(track and now - track.last_shift < SWAP_HOLD_S)
-
-    def swapped_since(self, sid: str, t: float) -> bool:
-        """True when the level jumped at or after ``t``."""
-        track = self.tracks.get(sid)
-        return bool(track and track.last_shift >= t)
-
-    def watch_swaps(self, buffers: dict[str, SensorBuffer], now: float) -> None:
-        with self._lock:
-            for sid, track in self.tracks.items():
-                buf = buffers.get(sid)
-                if buf is not None and self.supported(sid) and level_shift(buf):
-                    track.last_shift = now
-
     def evaluate(self, buffers: dict[str, SensorBuffer], now: float) -> list[Event]:
         events: list[Event] = []
         with self._lock:
@@ -318,7 +279,7 @@ class PartCheck:
             return None
         position = reading.position_um
         assert position is not None
-        found = self._classify(track, position)
+        found = self.classify(track, position)
         if found == track.state and not self._moved_elsewhere(track, found, position):
             track.pending = None
             return None
@@ -365,6 +326,9 @@ class PartCheck:
             if height > 0 and ref_height > 0:
                 text += (f" That is {cfg.pos(height, signed=False)} above the empty plate, the taught part is "
                          f"{cfg.pos(ref_height, signed=False)}.")
+                if abs(height - 2.0 * ref_height) <= max(0.1 * ref_height, ref.half_width_um):
+                    numbers["stacked"] = True
+                    text += " That is about twice the taught part: two parts may lie on top of each other."
         self._ids += 1
         return Event(id=f"ev-{int(now) % 100000}-p{self._ids}", sensor=sid, kind=KIND, severity="warning", t=now,
                      numbers=numbers, summary=text)

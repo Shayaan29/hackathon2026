@@ -30,17 +30,13 @@ class RealtimeError(RuntimeError):
 
 
 def _sensor_line(s: Any) -> str:
-    settings = ", ".join(s.settings) or "none (they are set in the sensor's own web page)"
-    if s.spec is None:
-        return (f"- {s.name} (id {s.id}): {s.model}, unit {s.unit}, tolerance {s.tolerance.low:g} to "
-                f"{s.tolerance.high:g} {s.unit}, adjustable settings: {settings}")
-    if s.display is None:
+    if s.spec is None or s.display is None:
         return (f"- {s.name} (id {s.id}): {s.model}, unit {s.unit}, {s.limit_word} {s.tolerance.low:g} to "
-                f"{s.tolerance.high:g} {s.unit}, adjustable settings: {settings}")
+                f"{s.tolerance.high:g} {s.unit}.")
     return (f"- {s.name} (id {s.id}): {s.spec.title}. Positions are distances from the start of the measuring "
             f"range in millimetres, exactly as the sensor's web page shows them: {s.spec.range_text} is the "
-            f"measuring range and the limit that counts as 'tolerance'. Noise, peaks and drift rates are in "
-            f"micrometres. Adjustable settings from the cockpit: {settings}")
+            f"measuring range and the limit that counts as 'tolerance'. Noise is in micrometres. The cockpit "
+            f"does not change the sensor's settings; they are set in the sensor's own web page.")
 
 
 def _datasheet_lines(settings: Settings) -> str:
@@ -74,51 +70,32 @@ How you speak:
 - Sound calm and precise, like an experienced test engineer.
 
 Hard rules:
-- Never state a measurement, frequency, rate, forecast or setting you did not get from a tool in this conversation. If you need a number, call get_data or analyze first.
-- When the operator wants to see something, call show_chart with the matching view, then say in one sentence what it shows.
-- change_setting needs the operator's explicit yes to that exact change. Ask first, for example "Shall I set averaging on sensor one to 64?". Only after a clear yes call it with confirmed set to true.
+- Never state a measurement, height, count or limit you did not get from a tool in this conversation. If you need a number, call get_data, analyze, get_part_check or get_parts first.
+- When the operator wants to see something, call show_chart or make_chart, then say in one sentence what it shows.
 - Messages that start with {ALERT_PREFIX} come from the monitoring system, not from the operator. Announce the alert in one or two sentences using only the numbers in it, then offer to show it. Do not call a tool for an alert unless the operator asks for more.
-- If a question has nothing to do with the sensors or this cockpit, say briefly that you only handle the sensor cockpit.
+- If a question has nothing to do with the sensor, the parts or this cockpit, say briefly that you only handle the sensor cockpit.
+- Never invent a cause, setting or number that is not in a tool result. Call checks what they are: checks to carry out, not a diagnosis.
 
-Chart views for show_chart:
-- timeseries: one sensor over time with its tolerance band. Default window 300 seconds.
-- compare: several sensors on one time axis, to see whether they moved together.
-- spectrum: frequency content. Use it for vibration questions or "is the sensor broken".
-- drift: slow trend with a forecast to the tolerance limit.
-Use stage_control with "back" to bring back the previous chart and "dismiss" to clear the current one.
-
-Diagnosis hints (say "likely" or "usually", never certain):
-- One clean frequency peak usually means mechanical vibration, not a sensor fault.
-- The same event on several sensors at the same moment points to the fixture or the table, not one sensor.
-- A slow, steady drift is often thermal.
-- Invalid readings usually mean the target is out of range, tilted, or too shiny or too dark for the sensor.
-- Higher averaging lowers noise but makes the sensor react more slowly.
-
-Setup assistant and reports:
-- When the operator asks whether a sensor is set up well, why it is noisy, or how to improve it, call suggest_settings and explain the proposal in one or two sentences with its numbers. To apply it, ask for a yes, then call change_setting once per proposed setting with confirmed true.
-- When the operator asks for a report, a ticket or a summary of an alert, call create_report. Say that the report is on screen and name the most likely cause in one sentence.
-- Alerts can mention that a person shook their phone right before. Then greet that person by name and say what the sensors measured from their shake.
-- Never invent a sensor setting, cause or number that is not in a tool result.
-
-Recordings and incidents:
-- A recording is a file the operator loaded. Its incidents are the anomalies found by analysing the whole file, in time order.
-- For what happened in the recording, or which incidents there are, call list_incidents. Name the count, then the first few with their time, sensor and kind.
-- To explain one incident, or to say what to check, call investigate_incident with its id. Then explain in the order of the returned explanation, one short sentence per point. The cockpit opens that incident and highlights it on the chart and on the twin while you speak.
-- investigate_incident can also return recommendations. When it does, say them after the explanation, in order, one short sentence each. Name the manual document and page when a recommendation has a source. If recommendations is null, say they are being prepared and will appear on screen.
-- For a question about the sensor, its settings, mounting, error values or limits, call search_manual with the question in the operator's words. Answer only from the returned passages, name the document and page, and say so plainly when the loaded manuals do not cover it. The cockpit shows the passages on screen.
-- Call the checks what they are: checks to carry out. Never state a cause as fact.
-- Mention an item under not_known_from_file when it limits the answer, for example an unknown spindle speed.
+The part check and the quality station:
+- The operator teaches one good part and the empty plate. Every other thing that rests under the sensor raises a "different part" alert. The sensor sees the height of the top surface only, so two parts of the same height look the same to it.
+- For "is this the right part", "what did you teach" or "how far off is it", call get_part_check and answer from it.
+- Once both are taught, the quality station counts every part that rests under the sensor and keeps a part log: its number, height, how long it stayed and whether it was the taught part. It learns the rhythm of the parts and warns of a possible jam (a part stays far longer than usual), a possible double feed (a part follows much sooner than usual) and a height trend of the good parts towards the edge of the band.
+- For "how many parts", "what was the last part", "how is the yield" or "is there a trend", call get_parts and answer from it.
 
 Charts:
-- Pick the chart that answers the question. Distribution or capability: make_chart histogram. Calm or unsettled periods, morning against afternoon, or comparing spread: make_chart boxplot (group_by hour, 10min, minute or sensor). Whether two sensors move together: make_chart scatter. Ranking sensors by noise, average, spread or alerts: make_chart bar. Live signal, comparison, spectrum or drift: show_chart.
-- make_chart returns findings. Say the most important one in one or two sentences.
+- show_chart with view timeseries shows the live signal with the measuring range. Default window 300 seconds.
+- make_chart answers questions about the readings: histogram (how the readings are spread) or boxplot (spread per minute, 10 minutes or hour). It also draws the part log, one value per part: parts (the height of every part in order, with the taught part's band and the trend), part_counts (a bar chart of good and different parts per minute, 10 minutes or hour) and part_heights (how the heights of the parts are spread). When the operator asks for a kind of chart, pick the closest one; a bar chart is part_counts. It returns findings; say the most important one in one or two sentences.
 - When asked to explain or walk through a chart, call explain_chart. Then say the returned steps in order, one short sentence per step, in your own words, keeping every number. Start directly with step 1, with no introduction. The cockpit points at each part of the chart while you speak, so do not skip or merge steps.
-- For the whole shift, earlier incidents or "what happened today", call show_shift. To look closely at one incident, call show_shift with its event_id."""
+- Use stage_control with "back" to bring back the previous chart and "dismiss" to clear the current one.
+
+Reports and manuals:
+- When the operator asks for a report, a ticket or a summary of an alert, call create_report. Say that the report is on screen and name the most likely cause in one sentence.
+- For a question about the sensor, its mounting, error values or limits, call search_manual with the question in the operator's words. Answer only from the returned passages, name the document and page, and say so plainly when the loaded manuals do not cover it. The cockpit shows the passages on screen.
+- Invalid readings usually mean the target is out of range, tilted, or too shiny or too dark for the sensor. Say "likely" or "usually", never certain."""
 
 
 def tools(settings: Settings) -> list[dict[str, Any]]:
     sensor_ids = [s.id for s in settings.sensors]
-    setting_names = sorted({name for s in settings.sensors for name in s.settings})
     sensor_param = {"type": "string",
                     "description": f"Sensor id ({', '.join(sensor_ids)}) or name, for example 'Sensor 1'."}
     return [
@@ -126,7 +103,7 @@ def tools(settings: Settings) -> list[dict[str, Any]]:
             "type": "function",
             "name": "get_data",
             "description": "Current reading of one sensor: latest value, mean, min, max, noise, "
-                           "tolerance, active alerts and settings.",
+                           "measuring range and active alerts.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -139,9 +116,8 @@ def tools(settings: Settings) -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "analyze",
-            "description": "Diagnosis of one sensor: last vibration with its frequency and which other "
-                           "sensors saw it, drift rate with minutes to the tolerance limit, invalid "
-                           "readings, recent events and plain-language observations.",
+            "description": "Diagnosis of one sensor: where the target is, invalid readings, the part check, "
+                           "recent alerts and plain-language observations.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -159,12 +135,9 @@ def tools(settings: Settings) -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "view": {"type": "string", "enum": ["timeseries", "compare", "spectrum", "drift"]},
-                    "sensors": {"type": "array", "items": {"type": "string"},
-                                "description": "Sensor ids. One for timeseries, spectrum and drift; "
-                                               "two or more for compare."},
-                    "window_s": {"type": "number",
-                                 "description": "Time window in seconds (timeseries/compare/drift)."},
+                    "view": {"type": "string", "enum": ["timeseries"]},
+                    "sensors": {"type": "array", "items": {"type": "string"}, "description": "Sensor id."},
+                    "window_s": {"type": "number", "description": "Time window in seconds."},
                 },
                 "required": ["view"],
             },
@@ -180,23 +153,6 @@ def tools(settings: Settings) -> list[dict[str, Any]]:
                 "required": ["action"],
             },
         },
-        {
-            "type": "function",
-            "name": "change_setting",
-            "description": "Change a sensor setting. Only call after the operator explicitly confirmed "
-                           "this exact change.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "sensor": sensor_param,
-                    "name": {"type": "string", "enum": setting_names},
-                    "value": {"type": "string", "description": "New value, for example '64'."},
-                    "confirmed": {"type": "boolean",
-                                  "description": "True only if the operator said yes to this change."},
-                },
-                "required": ["sensor", "name", "value", "confirmed"],
-            },
-        },
     ] + _extra_tools(sensor_param)
 
 
@@ -204,26 +160,38 @@ def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
-            "name": "suggest_settings",
-            "description": "Measure a sensor's signal quality and propose better settings (averaging, "
-                           "measuring rate, exposure) with the expected noise. Changes nothing.",
-            "parameters": {"type": "object", "properties": {"sensor": sensor_param}, "required": ["sensor"]},
+            "name": "get_part_check",
+            "description": "The part check of a sensor: what is under it now (taught part, different part, "
+                           "nothing), the taught part's position and allowed deviation, and the height when the "
+                           "empty plate is taught.",
+            "parameters": {"type": "object", "properties": {"sensor": sensor_param}},
+        },
+        {
+            "type": "function",
+            "name": "get_parts",
+            "description": "The quality station of a sensor: how many parts, how many were the taught part, the "
+                           "yield, parts per minute, the usual time per part and between parts, a height trend "
+                           "of the good parts, and the last parts with their heights.",
+            "parameters": {"type": "object", "properties": {"sensor": sensor_param}},
         },
         {
             "type": "function",
             "name": "make_chart",
-            "description": "Build the chart that best answers a question: histogram (how readings are spread, "
-                           "capability), boxplot (spread per hour, 10 minutes, minute or per sensor), scatter (does "
-                           "one sensor move with another) or bar (rank sensors by noise, mean, range or alerts). "
-                           "Returns findings with numbers.",
+            "description": "Build the chart that best answers a question. Of the readings: histogram (how they are "
+                           "spread) or boxplot (spread per hour, 10 minutes or minute). Of the part log, one value "
+                           "per part: parts (height of every part in order, with the band and the trend), "
+                           "part_counts (bars of good and different parts per period) or part_heights (how the "
+                           "part heights are spread). Returns findings with numbers.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "chart": {"type": "string", "enum": ["histogram", "boxplot", "scatter", "bar"]},
+                    "chart": {"type": "string",
+                              "enum": ["histogram", "boxplot", "parts", "part_counts", "part_heights"]},
                     "sensors": {"type": "array", "items": sensor_param},
-                    "window_s": {"type": "number", "description": "Look-back in seconds; the shift is 28800."},
-                    "group_by": {"type": "string", "enum": ["minute", "10min", "hour", "sensor"]},
-                    "metric": {"type": "string", "enum": ["noise", "mean", "range", "events"]},
+                    "window_s": {"type": "number",
+                                 "description": "Look-back in seconds; leave out for the part charts to use the "
+                                                "whole run."},
+                    "group_by": {"type": "string", "enum": ["minute", "10min", "hour"]},
                 },
                 "required": ["chart"],
             },
@@ -234,17 +202,6 @@ def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
             "description": "Explain the chart in front: returns the steps to say, in order. The cockpit "
                            "highlights each step on the chart while you speak.",
             "parameters": {"type": "object", "properties": {}},
-        },
-        {
-            "type": "function",
-            "name": "show_shift",
-            "description": "Show the whole shift for a sensor on a zoomable timeline, from hours down to single "
-                           "readings. With event_id it flies to that incident.",
-            "parameters": {
-                "type": "object",
-                "properties": {"sensor": sensor_param,
-                               "event_id": {"type": "string", "description": "Incident to zoom into."}},
-            },
         },
         {
             "type": "function",
@@ -259,30 +216,10 @@ def _extra_tools(sensor_param: dict[str, Any]) -> list[dict[str, Any]]:
         },
         {
             "type": "function",
-            "name": "list_incidents",
-            "description": "List the incidents found in the loaded recording, in time order, with id, kind, time, "
-                           "sensor and severity. Says so if no recording is analysed yet.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-        {
-            "type": "function",
-            "name": "investigate_incident",
-            "description": "Explain one incident of the loaded recording: why it was flagged, the checks the rules "
-                           "ran with their results, the suggested checks with reasons, what the file does not tell "
-                           "and where on the part it happened. The cockpit opens the incident and highlights it. "
-                           "Leave out incident_id for the first incident.",
-            "parameters": {
-                "type": "object",
-                "properties": {"incident_id": {"type": "string",
-                                               "description": "Incident id such as INC-003, from list_incidents."}},
-            },
-        },
-        {
-            "type": "function",
             "name": "search_manual",
             "description": "Look up the loaded sensor manuals. Returns the best matching passages with document "
-                           "and page. Use it for questions about the sensor, its settings, mounting, error values "
-                           "or limits. The cockpit shows the passages on screen.",
+                           "and page. Use it for questions about the sensor, its mounting, error values or limits. "
+                           "The cockpit shows the passages on screen.",
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string",

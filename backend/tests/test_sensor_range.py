@@ -185,14 +185,17 @@ def client(ranged):
         yield c
 
 
+def inject(client, kind: str, **params) -> None:
+    """Make the simulated sensor of the test do something (the cockpit itself has no such controls)."""
+    client.app.state.engine.sources["s1"].inject(kind, time.time(), **params)
+
+
 def test_config_and_charts_carry_the_display_unit(client):
     sensor = client.get("/api/config").json()["sensors"][0]
     assert sensor["display"]["unit"] == "mm" and sensor["spec"]["model"] == "ILD5500-10"
     history = client.get("/api/history", params={"sensors": "s1", "window_s": 60}).json()["series"][0]
     assert history["display"]["unit"] == "mm" and history["limit_word"] == "measuring range"
     assert history["unit"] == "µm" and all(4900 < v < 5100 for v in history["values"] if v is not None)
-    drift = client.get("/api/drift", params={"sensor": "s1", "window_s": 600}).json()
-    assert drift["display"]["decimals"] == 4 and drift["limit_word"] == "measuring range"
 
 
 def test_the_copilot_reads_positions_in_mm_and_names_the_data_sheet(client):
@@ -205,36 +208,8 @@ def test_the_copilot_reads_positions_in_mm_and_names_the_data_sheet(client):
     assert "ILD5500-10" in data["datasheet"] and "±1.5 µm" in data["datasheet"]
     assert data["unit"] == "µm" and 4900 < data["latest"] < 5100      # the signal itself stays in µm
     analysis = client.post("/api/tools/analyze", json={"sensor": "s1"}).json()
-    assert analysis["observations"] == ["Nothing unusual: noise and position are normal."]
-
-
-def test_the_setup_check_compares_with_the_data_sheet(client):
-    plan = client.get("/api/assistant/s1").json()
-    assert plan["status"] == "ok" and plan["basis"] == "Data sheet linearity (±1.5 µm)"
-    assert plan["proposal"] == [] and "data sheet linearity" in plan["summary"]
-
-
-def test_a_noisy_signal_gets_advice_with_manual_pages_and_no_settings_to_push(client):
-    client.post("/api/demo/noise", headers=TOKEN, json={"sensor": "s1", "factor": 5.0, "duration_s": 40.0})
-    time.sleep(6)
-    plan = client.get("/api/assistant/s1").json()
-    client.post("/api/demo/reset", headers=TOKEN, json={})
-    assert plan["status"] == "advice" and plan["proposal"] == []
-    assert "against a data sheet linearity of ±1.5 µm" in plan["summary"]
-    assert all(CITED.search(line) for line in plan["reasons"])
-    assert "The cockpit cannot change the sensor's settings" in plan["reasons"][-1]
-    assert client.post("/api/assistant/s1/apply", headers=TOKEN).status_code == 200
-
-
-def test_a_target_outside_the_range_is_named_as_the_reason_in_the_setup_check(client):
-    client.post("/api/demo/drift", headers=TOKEN, json={"sensor": "s1", "rate_per_min": 600_000.0})
-    time.sleep(5)
-    plan = client.get("/api/assistant/s1").json()
-    client.post("/api/demo/reset", headers=TOKEN, json={})
-    assert plan["status"] == "advice" and plan["proposal"] == []
-    assert plan["summary"].startswith("ILD5500 (ILD5500-10): the target is ")
-    assert "measuring range" in plan["summary"] and plan["summary"].endswith("See what to check below.")
-    assert plan["reasons"][0].startswith("The target is ") and "(data sheet p. 6)" in plan["reasons"][0]
+    assert analysis["observations"] == [
+        "Nothing unusual: the target is inside the measuring range and the readings are valid."]
 
 
 def wait_for_event(client, kind: str, seconds: float = 15.0) -> dict:
@@ -247,23 +222,23 @@ def wait_for_event(client, kind: str, seconds: float = 15.0) -> dict:
     raise AssertionError(f"no {kind} alert within {seconds:.0f} s")
 
 
-def test_a_noise_report_cites_the_manual_and_shows_the_data_sheet(client):
-    client.post("/api/demo/noise", headers=TOKEN, json={"sensor": "s1", "factor": 5.0, "duration_s": 20.0})
-    event = wait_for_event(client, "noise")
-    client.post("/api/demo/reset", headers=TOKEN, json={})
+def test_an_invalid_readings_report_cites_the_manual_and_shows_the_data_sheet(client):
+    inject(client, "dropout", share=0.6, duration_s=6.0)
+    event = wait_for_event(client, "invalid")
+    inject(client, "reset")
     rep = client.get(f"/api/reports/{event['id']}").json()
     assert rep["datasheet"]["title"] == "optoNCDT ILD5500-10" and len(rep["datasheet"]["rows"]) >= 6
     assert all(row["page"] > 0 for row in rep["datasheet"]["rows"])
-    assert all(CITED.search(text) for text in rep["causes"] + rep["actions"])
-    assert rep["setup"]["status"] == "advice" and rep["setup"]["proposal"] == []
+    assert any(CITED.search(text) for text in rep["causes"]) and CITED.search(rep["actions"][-1])
+    assert "setup" not in rep
     html = client.get(f"/report/{event['id']}").text
     assert "optoNCDT ILD5500-10" in html and "data sheet p. 6" in html and "Linearity" in html
 
 
 def test_the_report_of_a_leaving_target_speaks_of_the_measuring_range(client):
-    client.post("/api/demo/drift", headers=TOKEN, json={"sensor": "s1", "rate_per_min": 600_000.0})
+    inject(client, "drift", rate_per_min=600_000.0)
     event = wait_for_event(client, "out_of_range")
-    client.post("/api/demo/reset", headers=TOKEN, json={})
+    inject(client, "reset")
     assert "outside its measuring range" in event["summary"] and event["numbers"]["range"] == "0 to 10 mm"
     rep = client.get(f"/api/reports/{event['id']}").json()
     text = " ".join(rep["causes"] + rep["actions"])
@@ -279,7 +254,7 @@ def test_the_report_title_keeps_the_tolerance_wording_for_a_part_tolerance():
     assert kind_title("out_of_range") == "Out of tolerance"
     assert kind_title("out_of_range", "tolerance") == "Out of tolerance"
     assert kind_title("out_of_range", "measuring range") == "Out of measuring range"
-    assert kind_title("noise", "measuring range") == "Increased noise"
+    assert kind_title("wrong_part", "measuring range") == "Different part"
 
 
 def test_chart_explanations_speak_millimetres_and_the_measuring_range(client):
@@ -296,21 +271,6 @@ def test_chart_explanations_speak_millimetres_and_the_measuring_range(client):
     said = " ".join(step["text"] for step in hist["insights"])
     assert "of the way into the 0 to 10 mm measuring range" in said and "three standard deviations" in said
     assert "Cpk" not in said and "tolerance" not in said
-
-    bar = client.get("/api/explore", params={"chart": "bar", "metric": "mean"}).json()
-    assert bar["display"]["unit"] == "mm" and bar["values"][0] > 4000
-
-    drift = client.get("/api/insights", params={"view": "drift", "sensors": "s1", "window_s": 600}).json()["insights"]
-    assert drift and " mm" in drift[0]["text"]
-
-
-def test_the_shift_timeline_speaks_of_the_measuring_range(client):
-    shift = client.get("/api/shift", params={"sensor": "s1"}).json()
-    assert shift["limit_word"] == "measuring range" and shift["display"]["unit"] == "mm"
-    first = shift["insights"][0]["text"]
-    assert "inside its measuring range" in first and "tolerance" not in first
-    assert shift["insights"][-1]["text"].endswith("every target is inside its measuring range.") or \
-        "needs attention" in shift["insights"][-1]["text"]
 
 
 # -- the voice copilot ---------------------------------------------------------------------------------------------

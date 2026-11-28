@@ -4,9 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { KIND_LABEL, ago } from "../lib/format";
 import { LiveSocket, type SocketState } from "../lib/socket";
 import { alarm, chime, unlockAudio } from "../lib/sound";
-import type { CockpitEvent, ServerMessage } from "../types";
+import type { CockpitEvent, PartRecord, ServerMessage, StationState } from "../types";
 import { Torch } from "./torch";
-import { ShakeDetector, type ShakeSupport } from "./shake";
 
 interface PhoneHello {
   type: "hello";
@@ -35,6 +34,8 @@ export function PhoneApp() {
   const [hello, setHello] = useState<PhoneHello | null>(null);
   const [last, setLast] = useState<CockpitEvent | null>(null);
   const [flash, setFlash] = useState<CockpitEvent | null>(null);
+  const [station, setStation] = useState<StationState | null>(null);
+  const [parts, setParts] = useState<PartRecord[]>([]);
   const [, tick] = useState(0);
   const socket = useRef<LiveSocket | null>(null);
   const wake = useRef<WakeLockLike | null>(null);
@@ -45,23 +46,6 @@ export function PhoneApp() {
   const [name, setName] = useState(() => {
     try { return localStorage.getItem("phone-name") ?? ""; } catch { return ""; }
   });
-  const [shakeSupport, setShakeSupport] = useState<ShakeSupport>("unknown");
-  const [shakeNote, setShakeNote] = useState<string | null>(null);
-  const [crowd, setCrowd] = useState<string | null>(null);
-  const noteTimer = useRef(0);
-  const sendShake = useRef<(intensity: number) => void>(() => undefined);
-  sendShake.current = (intensity: number) => {
-    const sent = socket.current?.send(JSON.stringify({ type: "shake", name: name.trim(), intensity }));
-    navigator.vibrate?.(60);
-    note(sent ? "Sending your shake to the machine…" : "Not connected yet. Try again in a moment.");
-  };
-  const detector = useRef(new ShakeDetector((intensity) => sendShake.current(intensity)));
-  const note = (text: string, ms = 4000) => {
-    setShakeNote(text);
-    window.clearTimeout(noteTimer.current);
-    noteTimer.current = window.setTimeout(() => setShakeNote(null), ms);
-  };
-
   useEffect(() => {
     const id = window.setInterval(() => tick((n) => n + 1), 5000);
     const onVisible = async () => {
@@ -75,7 +59,6 @@ export function PhoneApp() {
   }, [joined]);
 
   useEffect(() => () => {
-    detector.current.disable();
     socket.current?.stop();
     torch.current.stop();
   }, []);
@@ -85,18 +68,24 @@ export function PhoneApp() {
       setHello(message);
       const events = message.events;
       if (events.length) setLast(events[events.length - 1]);
+      const first = message.sensors[0]?.id;
+      if (first) {
+        fetch(`/api/parts/${encodeURIComponent(first)}?limit=6`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d: (StationState & { records?: PartRecord[] }) | null) => {
+            if (!d) return;
+            setStation(d);
+            setParts(d.records ?? []);
+          })
+          .catch(() => { /* the list fills with the next part */ });
+      }
       return;
     }
-    const m = message as unknown as Record<string, unknown>;
-    if (m.type === "shake_ack") {
-      if (m.ok) note("It hit the machine. Watch the big screen.", 5000);
-      else if (m.reason === "busy") note(`The machine is still ringing. Try again in ${Math.ceil(Number(m.retry_s ?? 3))} s.`);
-      else note("Shaking only works while the cockpit runs on simulated sensors.", 6000);
-      return;
-    }
-    if (m.type === "shake") {
-      setCrowd(`${String(m.name)} knocked the machine`);
-      window.setTimeout(() => setCrowd(null), 4000);
+    if (message.type === "part") {
+      setStation(message.station);
+      const part = message.part;
+      if (!part) setParts([]);
+      else setParts((list) => [part, ...list.filter((p) => p.number !== part.number)].slice(0, 6));
       return;
     }
     if (message.type === "event") {
@@ -181,28 +170,25 @@ export function PhoneApp() {
         <section className="ph-card ph-card-quiet">All quiet. Waiting for the next alert…</section>
       )}
 
-      <section className="ph-shake">
-        {shakeSupport === "ready" ? (
-          <>
-            <div className="ph-shake-title">Shake your phone hard</div>
-            <p>Three firm shakes knock the machine. The sensors will feel it, and the copilot will tell you what it measured.</p>
-          </>
-        ) : (
-          <>
-            <div className="ph-shake-title">Test the machine yourself</div>
-            <p>Shake your phone to knock the measuring setup and see whether the AI notices.</p>
-            <button className="ph-shake-btn" onClick={async () => {
-              const support = await detector.current.enable();
-              setShakeSupport(support);
-              if (support === "denied") note("Motion access was refused. Use Knock instead.", 6000);
-              if (support === "unsupported") note("This phone has no motion sensor here. Use Knock instead.", 6000);
-            }}>Shake the machine</button>
-          </>
-        )}
-        <button className="ph-knock" onClick={() => sendShake.current(1)}>Knock instead</button>
-        {shakeNote && <p className="ph-shake-note">{shakeNote}</p>}
-      </section>
-      {crowd && <div className="ph-crowd">{crowd}</div>}
+      {station && (station.ready || station.parts > 0) && (
+        <section className="ph-parts">
+          <div className="ph-parts-top">
+            <span className="ph-parts-count" key={station.parts}>{station.parts}</span>
+            <span>parts<small>{station.good} good, {station.different} different</small></span>
+          </div>
+          {parts.length > 0 && (
+            <ol className="ph-parts-list">
+              {parts.map((p) => (
+                <li key={p.number} className={`is-${p.verdict}`}>
+                  <span>Part {p.number}</span>
+                  <span>{p.height ?? "–"}</span>
+                  <span>{p.verdict === "good" ? "taught part" : "different"}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      )}
 
       {flash && (
         <div key={flash.id} role="alert" className={`ph-alert ph-alert-${flash.severity}`} onClick={() => setFlash(null)}>

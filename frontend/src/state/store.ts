@@ -5,14 +5,12 @@ import type {
   ChartSpec,
   CockpitConfig,
   CockpitEvent,
-  IncidentDetail,
-  IncidentRow,
   InsightStep,
   KnowledgeStatus,
   ManualHit,
-  RecommendationSet,
+  PartRecord,
+  StationState,
   StatusMessage,
-  TwinSpot,
   VoiceActivity,
   VoiceMode,
 } from "../types";
@@ -29,8 +27,6 @@ export interface StagePanel {
   leaving?: "forward" | "dust";
   /** an explanation being walked through on this chart */
   tour?: PanelTour;
-  /** the shift timeline flies to this window; seq changes on every request */
-  focus?: { t0: number; t1: number; seq: number };
 }
 
 export interface Caption {
@@ -49,24 +45,7 @@ export interface Toast {
 export type FeedItem =
   | { id: string; t: number; type: "alert"; event: CockpitEvent }
   | { id: string; t: number; type: "say"; who: Caption["who"]; text: string; final: boolean }
-  | { id: string; t: number; type: "shake"; name: string; sensor: string }
-  | { id: string; t: number; type: "setting"; sensor: string; text: string }
-  | { id: string; t: number; type: "report"; reportId: string; title: string }
-  | { id: string; t: number; type: "setup"; sensor: string; text: string };
-
-export interface ShakeInfo {
-  name: string;
-  sensor: string;
-  t: number;
-  intensity: number;
-}
-
-export interface PendingChange {
-  sensor: string;
-  name: string;
-  value: string;
-  lang: "en" | "de";
-}
+  | { id: string; t: number; type: "report"; reportId: string; title: string };
 
 interface CockpitStore {
   config: CockpitConfig | null;
@@ -79,37 +58,27 @@ interface CockpitStore {
   voiceError: string | null;
   activity: VoiceActivity;
   captions: Caption[];
-  pending: PendingChange | null;
   toasts: Toast[];
   soundOn: boolean;
   speakAlerts: boolean;
-  demoOpen: boolean;
   qrOpen: boolean;
-  gesturesOn: boolean;
-  gesture: string | null;
   tokenOk: boolean | null;
   publicUrl: string;
   mission: boolean;
   missionSince: number;
   feed: FeedItem[];
   reportId: string | null;
-  assistantFor: string | null;
   /** the part check sheet of this sensor */
   partFor: string | null;
-  hints: Record<string, "ok" | "improve" | "advice">;
-  lastShake: ShakeInfo | null;
-  /** the recording sheet and the incident list */
-  recordingOpen: boolean;
-  incidentsOpen: boolean;
-  incidents: IncidentRow[];
-  incidentId: string | null;
-  incident: IncidentDetail | null;
-  /** where the twin shows the selected incident */
-  spot: TwinSpot | null;
-  /** manuals, and the recommendations per incident ("loading" while the model works) */
+  /** the quality station sheet (part log) of this sensor */
+  partsFor: string | null;
+  /** the last parts per sensor, newest first */
+  partLog: Record<string, PartRecord[]>;
+  /** the part that left the sensor last, for a short flash on the tile */
+  lastPart: { sensor: string; number: number; verdict: PartRecord["verdict"]; at: number } | null;
+  /** the manuals sheet, what is loaded, and the passages of the last answer */
   manualsOpen: boolean;
   knowledge: KnowledgeStatus | null;
-  recs: Record<string, RecommendationSet | "loading">;
   manualHit: ManualHit | null;
 
   patch: (partial: Partial<CockpitStore>) => void;
@@ -121,7 +90,7 @@ interface CockpitStore {
   markLeaving: (id: string, mode: "forward" | "dust") => void;
   removePanel: (id: string) => void;
   setTour: (id: string, tour: PanelTour | undefined) => void;
-  setFocus: (id: string, t0: number, t1: number) => void;
+  addPart: (sensor: string, part: PartRecord | null, station: StationState) => void;
 }
 
 let nextId = 1;
@@ -146,36 +115,40 @@ export const useStore = create<CockpitStore>((set, get) => ({
   voiceError: null,
   activity: "idle",
   captions: [],
-  pending: null,
   toasts: [],
   soundOn: true,
   speakAlerts: true,
-  demoOpen: false,
   qrOpen: false,
-  gesturesOn: false,
-  gesture: null,
   tokenOk: null,
   publicUrl: storedPublicUrl(),
   mission: false,
   missionSince: 0,
   feed: [],
   reportId: null,
-  assistantFor: null,
   partFor: null,
-  hints: {},
-  lastShake: null,
-  recordingOpen: false,
-  incidentsOpen: false,
-  incidents: [],
-  incidentId: null,
-  incident: null,
-  spot: null,
+  partsFor: null,
+  partLog: {},
+  lastPart: null,
   manualsOpen: false,
   knowledge: null,
-  recs: {},
   manualHit: null,
 
   patch: (partial) => set(partial),
+
+  addPart: (sensor, part, station) =>
+    set((s) => {
+      // the status message carries the counters too; this keeps them current between two status messages
+      const status = s.status && s.status.sensors[sensor]
+        ? { ...s.status, sensors: { ...s.status.sensors, [sensor]: { ...s.status.sensors[sensor], station } } }
+        : s.status;
+      if (!part) return { status, partLog: { ...s.partLog, [sensor]: [] } };
+      const log = (s.partLog[sensor] ?? []).filter((r) => r.number !== part.number);
+      return {
+        status,
+        partLog: { ...s.partLog, [sensor]: [part, ...log].slice(0, 200) },
+        lastPart: { sensor, number: part.number, verdict: part.verdict, at: Date.now() },
+      };
+    }),
 
   addEvent: (event) =>
     set((s) => (s.events.some((e) => e.id === event.id) ? s : {
@@ -224,6 +197,4 @@ export const useStore = create<CockpitStore>((set, get) => ({
 
   removePanel: (id) => set((s) => ({ stage: s.stage.filter((p) => p.id !== id) })),
   setTour: (id, tour) => set((s) => ({ stage: s.stage.map((p) => (p.id === id ? { ...p, tour } : p)) })),
-  setFocus: (id, t0, t1) =>
-    set((s) => ({ stage: s.stage.map((p) => (p.id === id ? { ...p, focus: { t0, t1, seq: nextId++ } } : p)) })),
 }));

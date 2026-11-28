@@ -98,18 +98,20 @@ button { font: inherit; color: inherit; }
   border: 1px solid rgba(255, 255, 255, 0.18); background: rgba(255, 255, 255, 0.06); color: var(--text);
 }
 .ph-name::placeholder { color: var(--muted); }
-
-.ph-shake { padding: 16px; border-radius: 16px; border: 1px solid rgba(143, 128, 255, 0.35); background: rgba(90, 63, 242, 0.1); display: grid; gap: 10px; }
-.ph-shake p { margin: 0; color: var(--muted); line-height: 1.45; }
-.ph-shake-title { font-size: 19px; font-weight: 600; }
-.ph-shake-btn { padding: 15px; border-radius: 14px; border: 0; background: #5a3ff2; color: #fff; font-size: 17px; font-weight: 600; }
-.ph-knock { padding: 11px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.2); background: transparent; color: var(--text); font-size: 15px; }
-.ph-shake-note { color: var(--text) !important; font-weight: 500; }
-.ph-crowd {
-  position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 5;
-  padding: 10px 16px; border-radius: 999px; background: rgba(10, 11, 34, 0.9); border: 1px solid rgba(143, 128, 255, 0.5); white-space: nowrap;
-}
 .ph-alert-report {
   margin-top: 6px; padding: 12px 18px; border-radius: 12px; background: rgba(255, 255, 255, 0.92); color: #15202b;
   font-weight: 600; font-size: 16px; text-decoration: none; text-shadow: none;
 }
+
+/* the quality station: the last parts, as they leave the sensor */
+.ph-parts { margin-top: 14px; padding: 14px 16px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(8, 18, 30, 0.85); }
+.ph-parts-top { display: flex; align-items: baseline; gap: 10px; font-weight: 600; }
+.ph-parts-top small { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
+.ph-parts-count { font-size: 40px; line-height: 1; font-variant-numeric: tabular-nums; animation: ph-pop 0.5s ease; }
+.ph-parts-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.ph-parts-list li { display: grid; grid-template-columns: 4.5em 1fr auto; gap: 8px; padding: 6px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); }
+.ph-parts-list li:first-child { animation: ph-pop 0.5s ease; }
+.ph-parts-list li.is-good span:last-child { color: var(--green); }
+.ph-parts-list li.is-different { background: rgba(251, 79, 107, 0.14); }
+.ph-parts-list li.is-different span:last-child { color: var(--red); font-weight: 600; }
+@keyframes ph-pop { from { transform: scale(1.12); opacity: 0.4; } to { transform: none; opacity: 1; } }
