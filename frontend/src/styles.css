@@ -528,3 +528,19 @@ button { cursor: pointer; }
 .part-steps { padding-left: 20px; }
 .part-steps li.is-done { color: var(--go); }
 .part-steps li.is-done::marker { content: "✓  "; }
+
+/* the camera next to the sensor */
+.camera-pip { position: fixed; left: 28px; top: 96px; z-index: 40; width: 280px; border-radius: 12px; overflow: hidden; background: #0b1420; box-shadow: 0 10px 30px rgba(10, 20, 30, 0.35); border: 1px solid rgba(255, 255, 255, 0.12); }
+.camera-frame { position: relative; aspect-ratio: 16 / 9; background: #000; }
+.camera-frame video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camera-flash { position: absolute; inset: 0; background: #fff; animation: cam-flash 0.7s ease-out forwards; pointer-events: none; }
+@keyframes cam-flash { from { opacity: 0.85; } to { opacity: 0; } }
+.camera-bar { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; color: #e8edf2; font-size: 13px; }
+.camera-bar .icon-only { color: #cfd6dd; width: 28px; height: 28px; background: transparent; border: 0; }
+.camera-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.camera-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff3b4d; box-shadow: 0 0 8px #ff3b4d; }
+.is-mission .camera-pip { top: auto; left: 4vw; bottom: 150px; width: 250px; border-color: rgba(143, 128, 255, 0.5); box-shadow: 0 0 30px rgba(143, 128, 255, 0.35); }
+.parts-table tr.is-link { cursor: pointer; }
+.parts-table tr.is-link:hover td { background: var(--sunk); }
+.hud-station-photo { width: 220px; aspect-ratio: 16 / 9; object-fit: cover; margin-top: 10px; border-radius: 10px; border: 2px solid rgba(46, 211, 154, 0.6); animation: fade-in 0.5s ease; }
+.hud-station-photo.is-different { border-color: #ff4d63; box-shadow: 0 0 24px rgba(255, 77, 99, 0.6); }

@@ -26,6 +26,7 @@ Thumbs.db
 # the part taught in the Part check and the part log of the quality station (written by the cockpit on the laptop)
 backend/data/part_reference.json
 backend/data/part_log.jsonl
+backend/data/photos/
 
 # left over on older checkouts from the removed hand gestures (MediaPipe); safe to delete
 frontend/public/mediapipe/

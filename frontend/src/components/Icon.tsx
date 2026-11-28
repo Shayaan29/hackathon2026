@@ -7,6 +7,7 @@ const PATHS: Record<string, string> = {
   qr: "M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 0h2v2h-2v-2Zm4 0h2v2h-2v-2Zm-4 4h2v2h-2v-2Zm4 0h2v2h-2v-2Z",
   sliders: "M4 6h10m4 0h2M4 12h4m4 0h8M4 18h12m4 0h0M14 4v4M8 10v4M16 16v4",
   lock: "M7 11V8a5 5 0 0 1 10 0v3M5 11h14v10H5V11Z",
+  camera: "M4 8h3l2-3h6l2 3h3v11H4V8Zm8 3a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z",
   phone: "M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm3 17h2",
   back: "M10 6 4 12l6 6M4 12h16",
   close: "M6 6l12 12M18 6 6 18",

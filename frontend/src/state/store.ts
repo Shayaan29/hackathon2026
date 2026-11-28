@@ -70,6 +70,8 @@ interface CockpitStore {
   reportId: string | null;
   /** the part check sheet of this sensor */
   partFor: string | null;
+  /** the camera next to the sensor: on, its name, and the last snapshot (for a flash) */
+  camera: { on: boolean; label: string | null; snapAt: number; snapPart: number | null };
   /** the quality station sheet (part log) of this sensor */
   partsFor: string | null;
   /** the last parts per sensor, newest first */
@@ -127,6 +129,7 @@ export const useStore = create<CockpitStore>((set, get) => ({
   reportId: null,
   partFor: null,
   partsFor: null,
+  camera: { on: false, label: null, snapAt: 0, snapPart: null },
   partLog: {},
   lastPart: null,
   manualsOpen: false,

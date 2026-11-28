@@ -26,6 +26,7 @@ from .detection import Detector, Event
 from .hub import COCKPIT, PHONE, Hub
 from .partcheck import PartCheck
 from .sources import SensorSource, UnavailableSource, create_source
+from .photos import PhotoStore
 from .station import Station
 
 log = logging.getLogger("cockpit.engine")
@@ -59,6 +60,8 @@ class Engine:
         # every part that rested under a sensor, kept in backend/data as well
         self.station = Station(settings.sensors, self.partcheck, settings.knowledge_dir.parent / "part_log.jsonl",
                                on_part=self._announce_part)
+        self.photos = PhotoStore(settings.knowledge_dir.parent / "photos")
+        self.station.photo_of = self.photos.url
         self.events: deque[Event] = deque(maxlen=300)
         self._pending = {s.id: np.empty(0) for s in settings.sensors}
         self._pending_t_end: dict[str, float] = {}

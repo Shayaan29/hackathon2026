@@ -10,9 +10,13 @@ export function ReportModal() {
   const patch = useStore((s) => s.patch);
   const frameRef = useRef<HTMLIFrameElement>(null);
   // "run:<sensor>" is the run report of the quality station, anything else the report on one alert
+  // "part:<sensor>:<number>" is the passport of one part
   const run = reportId?.startsWith("run:") ? reportId.slice(4) : null;
-  const path = !reportId ? "" : run ? `/run-report/${encodeURIComponent(run)}` : `/report/${encodeURIComponent(reportId)}`;
-  const title = run ? "Run report" : "Incident report";
+  const passport = reportId?.startsWith("part:") ? reportId.slice(5).split(":") : null;
+  const path = !reportId ? "" : run ? `/run-report/${encodeURIComponent(run)}`
+    : passport ? `/part/${encodeURIComponent(passport[0])}/${encodeURIComponent(passport[1])}`
+    : `/report/${encodeURIComponent(reportId)}`;
+  const title = run ? "Run report" : passport ? `Part passport: part ${passport[1]}` : "Incident report";
   const phoneUrl = `${publicUrl || window.location.origin}${path}`;
   const svg = useMemo(() => {
     const qr = qrcode(0, "M");
@@ -38,7 +42,7 @@ export function ReportModal() {
           <iframe ref={frameRef} src={`${path}?embed=1`} title={title} />
           <aside className="report-take">
             <div className="report-qr" dangerouslySetInnerHTML={{ __html: svg }} />
-            <p>Scan to take this report with you.</p>
+            <p>{passport ? "Scan to take this part's passport with you." : "Scan to take this report with you."}</p>
             {!publicUrl && <p className="muted">Phones need the public tunnel address, set under Phones.</p>}
           </aside>
         </div>

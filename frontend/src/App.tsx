@@ -7,6 +7,7 @@ import { ManualSheet } from "./components/ManualSheet";
 import { MissionHud } from "./components/MissionHud";
 import { PartCheckPanel } from "./components/PartCheckPanel";
 import { PartsPanel } from "./components/PartsPanel";
+import { CameraPreview } from "./components/CameraPreview";
 import { QrOverlay } from "./components/QrOverlay";
 import { ReportModal } from "./components/ReportModal";
 import { SensorStrip } from "./components/SensorStrip";
@@ -47,6 +48,7 @@ export default function App() {
       <ReportModal />
       <PartCheckPanel />
       <PartsPanel />
+      <CameraPreview />
       <ManualSheet />
       <ManualCard />
       <Toasts />

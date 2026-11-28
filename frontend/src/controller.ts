@@ -1,6 +1,7 @@
 // The cockpit's brain on the browser side: routes live data, alerts, voice,
 // typed commands and the tool calls from the AI.
 import { api, ApiError, getToken, initToken, setToken } from "./lib/api";
+import { Camera, camera } from "./lib/camera";
 import { parseCommand, phrase, windowWords, type Intent, type Lang } from "./lib/commands";
 import { KIND_LABEL, setRangeWording } from "./lib/format";
 import { setChartTheme } from "./lib/charts";
@@ -11,7 +12,8 @@ import { PushToTalkRecognizer, recognitionAvailable, speak, stopSpeaking } from 
 import { RealtimeVoice } from "./lib/voice";
 import { useStore } from "./state/store";
 import type {
-  ChartSpec, ChartView, CockpitConfig, CockpitEvent, ExploreChart, InsightStep, ManualPassage, ServerMessage, ViewData,
+  ChartSpec, ChartView, CockpitConfig, CockpitEvent, ExploreChart, InsightStep, ManualPassage, ServerMessage, StatusMessage,
+  ViewData,
 } from "./types";
 
 type StageApi = { dissolveFront: () => boolean };
@@ -213,6 +215,53 @@ class Controller {
     store().patch({ partFor: this.resolveSensor(sensor ?? this.lastSensor ?? this.firstSensor()), reportId: null, partsFor: null });
   }
 
+  // -- the camera: a picture of every part while it rests under the sensor ---------------
+
+  private snapped = new Map<string, number>();
+
+  async toggleCamera(next = false): Promise<void> {
+    if (camera.on && !next) {
+      camera.stop();
+      store().patch({ camera: { ...store().camera, on: false } });
+      return;
+    }
+    try {
+      let id = Camera.saved();
+      if (next) {
+        const all = await Camera.list();
+        const now = all.findIndex((d) => d.deviceId === id);
+        id = all.length ? all[(now + 1) % all.length].deviceId : null;
+      }
+      const label = await camera.start(id);
+      store().patch({ camera: { ...store().camera, on: true, label } });
+      store().toast(`Camera on: ${label}. Each part is photographed while it rests under the sensor.`, "ok");
+    } catch (error) {
+      store().patch({ camera: { ...store().camera, on: false } });
+      store().toast(`The camera did not start: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+  }
+
+  private snapParts(message: StatusMessage): void {
+    if (!camera.on) return;
+    for (const [sid, status] of Object.entries(message.sensors)) {
+      const current = status.station?.current;
+      if (current && current.since_s >= 0.5) void this.snapPart(sid, current.number);
+    }
+  }
+
+  async snapPart(sensor: string, number: number): Promise<void> {
+    if (!camera.on || this.snapped.get(sensor) === number) return;
+    this.snapped.set(sensor, number);
+    const photo = await camera.snapshot();
+    if (!photo) return;
+    store().patch({ camera: { ...store().camera, snapAt: Date.now(), snapPart: number } });
+    try {
+      await api.partPhoto(sensor, number, photo);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) store().toast("Unlock the cockpit to keep the camera pictures.", "warn");
+    }
+  }
+
   /** The quality station sheet: counters, rhythm, trend and the part log. */
   openParts(sensor?: string): void {
     const sid = this.resolveSensor(sensor ?? this.lastSensor ?? this.firstSensor());
@@ -232,6 +281,7 @@ class Controller {
   async newRun(sensor: string): Promise<boolean> {
     try {
       const data = await api.partsNewRun(sensor);
+      this.snapped.delete(sensor);
       store().addPart(sensor, null, data);
       store().toast("New run started: the part log is empty.", "ok");
       return true;
@@ -297,6 +347,7 @@ class Controller {
       case "status":
         setServerTime(message.t);
         store().patch({ status: message });
+        this.snapParts(message);
         break;
       case "samples":
         ingest(message);
@@ -310,6 +361,7 @@ class Controller {
         store().patch({ reportId: message.id, partFor: null, partsFor: null });
         break;
       case "part":
+        if (!message.part) this.snapped.delete(message.sensor);   // a new run: the numbers start again
         store().addPart(message.sensor, message.part, message.station);
         break;
       default:
@@ -319,6 +371,10 @@ class Controller {
 
   private onEvent(event: CockpitEvent): void {
     store().addEvent(event);
+    if (event.kind === "wrong_part" && camera.on) {
+      const station = store().status?.sensors[event.sensor]?.station;
+      if (station) void this.snapPart(event.sensor, station.current?.number ?? station.parts + 1);
+    }
     store().patch({ alert: event });
     window.clearTimeout(this.alertTimer);
     if (event.severity !== "critical") {
@@ -730,6 +786,10 @@ class Controller {
       case "q":
       case "Q":
         s.patch({ qrOpen: !s.qrOpen });
+        break;
+      case "c":
+      case "C":
+        void this.toggleCamera();
         break;
       case "m":
       case "M":

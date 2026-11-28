@@ -123,6 +123,8 @@ class Station:
         self.partcheck = partcheck
         self.path = path
         self.on_part = on_part
+        # where the camera picture of a part is, if there is one (set by the engine)
+        self.photo_of: Callable[[str, int], str | None] | None = None
         self.lines = {sid: _Line() for sid in self.sensors}
         self._lock = threading.RLock()
         self._ids = 0
@@ -467,6 +469,7 @@ class Station:
         data = asdict(record)
         data["position"] = cfg.pos(record.position_um, signed=False)
         data["height"] = None if record.height_um is None else cfg.pos(record.height_um, signed=False)
+        data["photo"] = self.photo_of(sid, record.number) if self.photo_of else None
         return data
 
     def public(self, sid: str, now: float, limit: int = 0) -> dict[str, Any]:
