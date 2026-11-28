@@ -9,6 +9,7 @@ import type {
   KnowledgeStatus,
   ManualDocument,
   ManualAnswer,
+  ManualLibrary,
   ManualPassage,
   ChatTurn,
   PartCountsData,
@@ -124,7 +125,9 @@ export const api = {
   manualUrl: (doc: string, page: number | null) =>
     `/api/knowledge/file/${encodeURIComponent(doc)}${page ? `#page=${page}` : ""}`,
   // the copilot's tools, called from the browser when the AI asks for them
-  searchManualTool: (query: string) => post<Record<string, unknown>>("/api/tools/search_manual", { query }),
+  searchManualTool: (query: string, product?: string) =>
+    post<Record<string, unknown>>("/api/tools/search_manual", { query, product: product || null }),
+  manualLibrary: () => request<ManualLibrary>("/api/knowledge/library"),
 };
 
 /** Fetches whatever a chart spec needs. */

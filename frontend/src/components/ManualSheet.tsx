@@ -1,8 +1,8 @@
 // The manuals the AI reads when it recommends what to check: add or remove PDFs, and try a question.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useStore } from "../state/store";
-import type { ManualAnswer } from "../types";
+import type { ManualAnswer, ManualLibrary } from "../types";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 
@@ -18,6 +18,15 @@ export function ManualSheet() {
   const [error, setError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<ManualAnswer | null>(null);
+  const [library, setLibrary] = useState<ManualLibrary | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let stop = false;
+    const load = () => api.manualLibrary().then((l) => { if (!stop) setLibrary(l); }).catch(() => undefined);
+    void load();
+    const timer = window.setInterval(load, 4000);
+    return () => { stop = true; window.clearInterval(timer); };
+  }, [open]);
   if (!open) return null;
 
   const close = () => patch({ manualsOpen: false });
@@ -124,6 +133,20 @@ export function ManualSheet() {
               <input type="text" value={question} placeholder="Ask the manuals" onChange={(e) => setQuestion(e.target.value)} />
               <button className="solid-btn" type="submit" disabled={!question.trim() || docs.length === 0 || busy !== null}>Ask</button>
             </form>
+            {library && library.documents > 0 && (
+              <p className="muted">
+                Library: {library.documents} manuals, {Object.keys(library.families).length} product families, {library.passages.toLocaleString()} passages
+                {library.state === "indexing" && " · reading the manuals…"}
+                {library.state === "embedding" && ` · indexing by meaning ${Math.round(100 * library.embedded / Math.max(1, library.passages))} %`}
+                {library.active_product && ` · answers for ${library.active_product} unless you name another model`}
+              </p>
+            )}
+            {answer?.scope?.product && (
+              <p className="man-scope">From the manuals of <strong>{answer.scope.product}</strong> ({answer.scope.source})</p>
+            )}
+            {answer?.scope && !answer.scope.product && answer.found && (
+              <p className="man-scope">From all manuals: no product named and no sensor connected</p>
+            )}
             {answer && (
               <div className={`man-answer ${answer.found ? "" : "is-missing"}`}>
                 <Markdown text={answer.answer} />
@@ -136,7 +159,7 @@ export function ManualSheet() {
               <ol className="man-hits">
                 {answer.sources.map((hit, n) => (
                   <li key={hit.id}>
-                    <a href={api.manualUrl(hit.doc, hit.page)} target="_blank" rel="noreferrer">
+                    <a href={hit.url} target="_blank" rel="noreferrer">
                       S{n + 1} · {hit.citation}
                     </a>
                     <p>{hit.text.length > 420 ? `${hit.text.slice(0, 417)}…` : hit.text}</p>

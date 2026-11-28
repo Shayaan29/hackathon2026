@@ -68,8 +68,21 @@ def create_app(settings: Settings | None = None,
     engine = Engine(settings, hub)
     openai = OpenAIClient(settings.openai_api_key, base_url=settings.openai_base_url, factory=openai_factory)
     knowledge = KnowledgeBase(settings.knowledge_dir, openai, settings.embed_model)
-    rag = ManualRag(settings.knowledge_dir, openai, embedding_model=settings.embed_model,
-                    answer_model=settings.answer_model, reasoning_effort=settings.answer_reasoning)
+
+    def active_product() -> str | None:
+        """The sensor the manuals answer for: the model the SensorFinder found, else the configured one."""
+        for cfg in settings.sensors:
+            found = getattr(engine.sources.get(cfg.id), "found", None)
+            if found is not None and getattr(found, "model", ""):
+                return str(found.model)
+            if cfg.model:
+                return cfg.model
+        return None
+
+    rag = ManualRag([settings.knowledge_dir, *settings.manual_library], openai,
+                    embedding_model=settings.embed_model, answer_model=settings.answer_model,
+                    reasoning_effort=settings.answer_reasoning, embedding_dimensions=settings.embed_dimensions,
+                    background=True, active_product=active_product)
     for warning in knowledge.warnings:
         log.warning("manual skipped: %s", warning)
 

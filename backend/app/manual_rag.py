@@ -27,21 +27,25 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import quote
 
 import numpy as np
 
 from .openai_client import OpenAIClient, OpenAIError
 
 log = logging.getLogger("cockpit.knowledge")
+# the PDF reader warns about every rotated label and font it cannot fully decode; the text is still read
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
-INDEX_VERSION = 7
+INDEX_VERSION = 8
 DOC_SUFFIXES = (".pdf", ".md", ".markdown", ".txt")
 # notes that live in the manuals folder but are not manuals
 IGNORED_FILES = frozenset({"readme.md", ".gitkeep"})
@@ -54,6 +58,10 @@ SEMANTIC_WEIGHT = 1.6
 KEEP_SEMANTIC = 3
 # cosine similarity below which an embedding-only match does not count as found
 MIN_SEMANTIC = 0.30
+# how the copilot must use the passages it gets from search_manual
+SPEAK_RULE = ("Answer only from these passages. They are from the manuals of the product named in scope; never "
+              "apply them to another product. Keep exact numbers, units, min/typ/max and test conditions. Say "
+              "which product and model the value is for. Name the document, section and page (cite).")
 
 STOPWORDS = frozenset("""
 a an and are as at be by can do does for from has have how i if in into is it its me my of on or
@@ -115,7 +123,8 @@ def _tidy(line: str) -> str:
 
 # -- chunks ----------------------------------------------------------------------
 
-_DOC_KINDS = {"dat": "Datasheet", "man": "Manual", "set": "Setup guide", "cat": "Catalogue"}
+_DOC_KINDS = {"dat": "Datasheet", "man": "Manual", "maq": "Quick guide", "mav": "Interface manual",
+              "set": "Setup guide", "cat": "Catalogue"}
 
 
 def doc_label(filename: str) -> str:
@@ -124,7 +133,7 @@ def doc_label(filename: str) -> str:
     'man--optoNCDT-5500-EtherCAT--en.pdf' gives 'Manual 5500 EtherCAT'.
     Any other file name is used as it is, without its extension."""
     stem = Path(filename).stem
-    m = re.match(r"^(dat|man|set|cat)--(.+?)(?:-{1,2}(de|en))?$", stem, re.IGNORECASE)
+    m = re.match(r"^(dat|man|maq|mav|set|cat)--(.+?)(?:-{1,2}(de-en|de|en))?$", stem, re.IGNORECASE)
     if not m:
         return stem
     name = re.sub(r"^optoNCDT-", "", m.group(2), flags=re.IGNORECASE).replace("--", " ").replace("-", " ")
@@ -402,100 +411,270 @@ class BM25:
         return out
 
 
+# -- products: which sensor a manual is about --------------------------------------------
+
+# model prefixes the operator or MEDAQLib's SensorFinder use, and the product family of their manuals
+_FAMILY_ALIASES = {
+    "ild": "optoncdt", "ilr": "optoncdt", "ifc": "confocaldt", "ifd": "confocaldt", "ims": "interferometer",
+    "llt": "scancontrol", "odc": "optocontrol", "acs": "colorcontrol", "cfo": "colorsensor", "dt": "",
+}
+# a number that is a quantity, not a model: "4000 Hz", "1024 port" stays a model only if a manual has it
+_UNIT_AFTER = re.compile(r"\s*(mm|µm|um|nm|hz|khz|mhz|v|vdc|ma|w|°|%|ms|s|lux|bit|baud|kb|mb)\b", re.IGNORECASE)
+_MODEL_NUMBER = re.compile(r"(?<![\d.,])(\d{3,4})(?![\d.,])")
+
+
+@dataclass(frozen=True)
+class Product:
+    """What a manual is about, read from Micro-Epsilon's file name ('man--optoNCDT-5500-EtherCAT--en.pdf')."""
+
+    family: str                      # "optoncdt"
+    name: str                        # "optoNCDT 5500 EtherCAT"
+    numbers: tuple[str, ...]         # model number patterns, x = any digit: ("5500",), ("29xx",), ("61x4",)
+
+    def matches_number(self, number: str) -> bool:
+        return any(len(p) == len(number) and all(a in ("x", b) for a, b in zip(p, number)) for p in self.numbers)
+
+
+def product_of(filename: str) -> Product:
+    stem = Path(filename).stem
+    stem = re.sub(r"^(dat|man|maq|mav|set|cat)--", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"-{1,2}(de-en|en|de)$", "", stem, flags=re.IGNORECASE)
+    parts = [p for p in re.split(r"[-_ ]+", stem) if p]
+    family = parts[0].lower() if parts and not parts[0][0].isdigit() else ""
+    numbers = []
+    for part in parts:
+        m = re.fullmatch(r"[A-Za-z]*(\d[\dxX]{2,3})[A-Za-z]*", part)
+        if m and re.search(r"\d", m.group(1)):
+            numbers.append(m.group(1).lower())
+    return Product(family, " ".join(parts), tuple(dict.fromkeys(numbers)))
+
+
+def mentioned_products(text: str, products: dict[str, Product]) -> set[str]:
+    """The documents whose product a question or a model text names.
+
+    A model number picks the manuals that cover it; a family named next to it ("ILD5500", "optoNCDT 5500")
+    keeps out other families that happen to share the number (interferoMETER 5x00). Without a number the
+    family decides, narrowed by a variant name such as thermoMETER "CT" or "CSL" when one is given.
+    """
+    text = str(text or "")
+    words = {w.lower() for w in re.findall(r"[A-Za-z]+", text)}
+    prefixes = {m.lower() for m in re.findall(r"([A-Za-z]{2,4})[\s-]?\d{3,4}", text)}
+    known = {p.family for p in products.values() if p.family}
+    families = {f for f in known if f in words}
+    families |= {_FAMILY_ALIASES[w] for w in words | prefixes if _FAMILY_ALIASES.get(w)}
+    # DT is the controller prefix of two families: DT30xx/DT31xx eddyNCDT, DT6xxx capaNCDT
+    for m in re.finditer(r"(?<![A-Za-z])DT\s?-?([36])\d{2,3}", text, re.IGNORECASE):
+        families.add("eddyncdt" if m.group(1) == "3" else "capancdt")
+
+    numbers = [m.group(1) for m in _MODEL_NUMBER.finditer(text) if not _UNIT_AFTER.match(text, m.end())]
+    docs = {doc for doc, prod in products.items() if any(prod.matches_number(n) for n in numbers)}
+    if docs and families:
+        same_family = {d for d in docs if products[d].family in families}
+        docs = same_family or docs
+    if docs:
+        return docs
+
+    docs = {doc for doc, prod in products.items() if prod.family in families}
+    variants = {doc for doc in docs
+                if words & {part.lower() for part in products[doc].name.split()[1:] if part.isalpha()}}
+    return variants or docs
+
+
+# -- indexing one file (also run in worker processes) ---------------------------------------------
+
+def _file_key(path: Path) -> str:
+    st = path.stat()
+    return hashlib.sha1(f"v{INDEX_VERSION}|{path.name}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:16]
+
+
+def _index_file(path_text: str, cache_text: str) -> tuple[str, str | None]:
+    """Chunk one manual and cache its passages. Returns (file name, error)."""
+    path, cache = Path(path_text), Path(cache_text)
+    try:
+        chunks = chunk_file(path)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps([asdict(c) for c in chunks]), encoding="utf-8")
+        return path.name, None
+    except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
+        return path.name, f"{type(exc).__name__}: {exc}"
+
+
 # -- the knowledge base ----------------------------------------------------------------
 
 class KnowledgeBase:
-    def __init__(self, folder: Path, client: OpenAIClient | None = None,
+    """Every manual in the given folders, searchable by keyword and meaning, scoped to one product.
+
+    The library can be large (all operating instructions of a manufacturer). Each file is chunked and
+    embedded once and cached on its own, so adding a manual only indexes that manual. With
+    ``background=True`` (the cockpit) a changed library is indexed in a worker thread while questions
+    are answered from what is ready; without it (scripts, tests) a question waits for the index.
+    """
+
+    def __init__(self, folder: Path | list[Path] | tuple[Path, ...], client: OpenAIClient | None = None,
                  embedding_model: str = "text-embedding-3-small", answer_model: str = "gpt-5-mini",
-                 cache_dir: Path | None = None, reasoning_effort: str = "low") -> None:
-        self.folder = Path(folder)
-        # a folder of its own inside the manuals cache, next to the one knowledge.py keeps
+                 cache_dir: Path | None = None, reasoning_effort: str = "low", embedding_dimensions: int = 512,
+                 background: bool = False, active_product: Callable[[], str | None] | None = None) -> None:
+        folders = [Path(folder)] if isinstance(folder, (str, Path)) else [Path(f) for f in folder]
+        self.folders = folders
+        self.folder = folders[0]
+        # a folder of its own inside the first folder's cache, next to the one knowledge.py keeps
         self.cache_dir = Path(cache_dir) if cache_dir else self.folder / ".cache" / "rag"
         self.client = client or OpenAIClient("")
         self.embedding_model = embedding_model
+        self.embedding_dimensions = embedding_dimensions if embedding_model.startswith("text-embedding-3") else 0
         self.answer_model = answer_model
         self.reasoning_effort = reasoning_effort
+        self.background = background
+        self.active_product = active_product or (lambda: None)
         self._lock = threading.RLock()
+        self._build_lock = threading.Lock()
+        self._building = False
         self._signature: str | None = None
         self.chunks: list[Chunk] = []
+        self.products: dict[str, Product] = {}
+        self.paths: dict[str, Path] = {}
         self._bm25: BM25 | None = None
-        self._vectors: np.ndarray | None = None
+        self._vectors: np.ndarray | None = None       # one row per chunk; zero rows are not embedded yet
+        self._embedded = np.zeros(0, dtype=bool)
         self._semantic_error: str | None = None
         self.errors: dict[str, str] = {}
         self.built_at: float | None = None
+        self.progress: dict[str, Any] = {"state": "idle", "files": 0, "indexed": 0, "embedded": 0}
+
+    # the library ------------------------------------------------------------
+
+    def files(self) -> list[Path]:
+        """Every manual in the folders; a file name that appears twice is read from the first folder."""
+        seen: dict[str, Path] = {}
+        for folder in self.folders:
+            if not folder.is_dir():
+                continue
+            for p in sorted(folder.iterdir()):
+                if (p.is_file() and p.suffix.lower() in DOC_SUFFIXES and not p.name.startswith(".")
+                        and p.name.lower() not in IGNORED_FILES and p.name not in seen):
+                    seen[p.name] = p
+        return list(seen.values())
+
+    def _library_signature(self, files: list[Path]) -> str:
+        parts = [f"v{INDEX_VERSION}"] + [f"{p}:{p.stat().st_size}:{int(p.stat().st_mtime)}" for p in files]
+        return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+
+    def _cache_path(self, path: Path) -> Path:
+        return self.cache_dir / "files" / f"{_file_key(path)}.json"
+
+    def _vector_path(self, path: Path) -> Path:
+        model = re.sub(r"[^a-z0-9.-]", "_", self.embedding_model.lower())
+        return self.cache_dir / "files" / f"{_file_key(path)}-{model}-{self.embedding_dimensions or 'full'}.npy"
 
     # building ---------------------------------------------------------------
 
-    def files(self) -> list[Path]:
-        if not self.folder.is_dir():
-            return []
-        return sorted(p for p in self.folder.iterdir()
-                      if p.is_file() and p.suffix.lower() in DOC_SUFFIXES and not p.name.startswith(".")
-                      and p.name.lower() not in IGNORED_FILES)
+    def ensure(self, force: bool = False, wait_s: float = 20.0) -> None:
+        """Index the library when files were added, changed or removed.
 
-    def _folder_signature(self) -> str:
-        parts = [f"v{INDEX_VERSION}"] + [f"{p.name}:{p.stat().st_size}:{int(p.stat().st_mtime)}"
-                                         for p in self.files()]
-        return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
-
-    def ensure(self, force: bool = False) -> None:
-        """(Re)build the index when files in the folder were added, changed or removed."""
+        In background mode this starts the work and returns; questions use what is ready meanwhile.
+        """
+        files = self.files()
+        signature = self._library_signature(files)
+        if not force and signature == self._signature:
+            return
+        if not self.background:
+            self._build(files, signature)
+            return
         with self._lock:
-            signature = self._folder_signature()
-            if not force and signature == self._signature:
-                return
+            start = not self._building
+            self._building = True
+        if start:
+            threading.Thread(target=self._build_and_embed, args=(files, signature), name="manual-rag-index",
+                             daemon=True).start()
+        # a question before the first build is done waits briefly: cached manuals load in seconds
+        deadline = time.time() + wait_s
+        while not self.chunks and self._building and time.time() < deadline:
+            time.sleep(0.2)
+
+    def _build_and_embed(self, files: list[Path], signature: str) -> None:
+        try:
+            self._build(files, signature)
+            self._embed_library()
+        except Exception as exc:  # noqa: BLE001 - a broken library must not stop the cockpit
+            log.warning("could not index the manuals: %s", exc)
+            self.progress["state"] = f"error: {exc}"
+        finally:
+            with self._lock:
+                self._building = False
+
+    def _build(self, files: list[Path], signature: str) -> None:
+        with self._build_lock:
             started = time.time()
-            chunks = None if force else self._load_cache(signature)
-            if chunks is None:
-                chunks, self.errors = [], {}
-                for path in self.files():
-                    try:
-                        chunks.extend(chunk_file(path))
-                    except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
-                        log.warning("could not read %s: %s", path.name, exc)
-                        self.errors[path.name] = str(exc)
-                for i, chunk in enumerate(chunks):
-                    chunk.id = f"K{i + 1:04d}"
-                self._save_cache(signature, chunks)
-            self.chunks = chunks
-            self._bm25 = BM25([tokenize(c.search_text()) for c in chunks])
-            self._vectors, self._semantic_error = None, None
-            self._signature = signature
-            self.built_at = time.time()
+            self.progress.update(state="indexing", files=len(files), indexed=0)
+            missing = [p for p in files if not self._cache_path(p).exists()]
+            errors: dict[str, str] = {}
+            if missing:
+                log.info("manuals: indexing %d of %d files", len(missing), len(files))
+                for name, error in self._index_files(missing):
+                    if error:
+                        errors[name] = error
+                        log.warning("could not read %s: %s", name, error)
+                    self.progress["indexed"] += 1
+            chunks: list[Chunk] = []
+            for path in files:
+                if path.name in errors:
+                    continue
+                try:
+                    raw = json.loads(self._cache_path(path).read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    errors[path.name] = str(exc)
+                    continue
+                key = _file_key(path)[:8]
+                for n, c in enumerate(raw, start=1):
+                    c["id"] = f"{key}-{n}"
+                    chunks.append(Chunk(**c))
+            bm25 = BM25([tokenize(c.search_text()) for c in chunks])
+            with self._lock:
+                old = {c.id: i for i, c in enumerate(self.chunks)}
+                vectors, embedded = self._carry_vectors(chunks, old)
+                self.chunks, self._bm25 = chunks, bm25
+                self._vectors, self._embedded = vectors, embedded
+                self.paths = {p.name: p for p in files}
+                self.products = {p.name: product_of(p.name) for p in files}
+                self.errors = errors
+                self._signature = signature
+                self.built_at = time.time()
+            self.progress.update(state="ready" if not self.client.enabled else "embedding",
+                                 indexed=len(files), embedded=int(embedded.sum()))
             log.info("manuals indexed: %d passages from %d files in %.1f s",
-                     len(chunks), len(self.files()), time.time() - started)
+                     len(chunks), len(files) - len(errors), time.time() - started)
 
-    def _cache_file(self) -> Path:
-        return self.cache_dir / "chunks.json"
+    def _carry_vectors(self, chunks: list[Chunk], old: dict[str, int]) -> tuple[np.ndarray | None, np.ndarray]:
+        """Keep the vectors of passages that were already embedded when the library changes."""
+        embedded = np.zeros(len(chunks), dtype=bool)
+        if self._vectors is None or not len(self._vectors):
+            return None, embedded
+        vectors = np.zeros((len(chunks), self._vectors.shape[1]), dtype=np.float32)
+        for i, c in enumerate(chunks):
+            j = old.get(c.id)
+            if j is not None and self._embedded[j]:
+                vectors[i], embedded[i] = self._vectors[j], True
+        return vectors, embedded
 
-    def _load_cache(self, signature: str) -> list[Chunk] | None:
-        try:
-            raw = json.loads(self._cache_file().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if raw.get("signature") != signature:
-            return None
-        self.errors = raw.get("errors", {})
-        return [Chunk(**c) for c in raw["chunks"]]
-
-    def _save_cache(self, signature: str, chunks: list[Chunk]) -> None:
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self._cache_file().write_text(json.dumps(
-                {"signature": signature, "errors": self.errors, "chunks": [asdict(c) for c in chunks]}),
-                encoding="utf-8")
-        except OSError as exc:
-            log.warning("could not write the manual cache: %s", exc)
+    def _index_files(self, paths: list[Path]):
+        """Chunk files in parallel processes (PDF reading is CPU work); one by one where that fails."""
+        jobs = [(str(p), str(self._cache_path(p))) for p in paths]
+        if len(jobs) > 2:
+            try:
+                from concurrent.futures import ProcessPoolExecutor
+                with ProcessPoolExecutor(max_workers=max(1, min(6, (os.cpu_count() or 2) - 1))) as pool:
+                    yield from pool.map(_index_file, *zip(*jobs))
+                return
+            except Exception as exc:  # noqa: BLE001 - no process pool (e.g. frozen app): do it here
+                log.info("manuals: indexing in this process (%s)", exc)
+        for path_text, cache_text in jobs:
+            if not Path(cache_text).exists():
+                yield _index_file(path_text, cache_text)
 
     def warm_in_background(self) -> None:
-        """Read the manuals and embed them once at startup, so the first question does not wait."""
-        def run() -> None:
-            try:
-                self.ensure()
-                self._chunk_vectors()
-            except Exception as exc:  # noqa: BLE001 - a broken manual must not stop the cockpit
-                log.warning("could not prepare the manual answers: %s", exc)
-        threading.Thread(target=run, name="manual-rag-warmup", daemon=True).start()
+        """Index and embed the library at startup, so the first question does not wait."""
+        self.background = True
+        self.ensure(wait_s=0.0)
 
     # embeddings (optional) ------------------------------------------------------
 
@@ -507,44 +686,130 @@ class KnowledgeBase:
         """One OpenAI call through the shared client. Runs in a worker thread, never on the event loop."""
         return asyncio.run(self.client.request("POST", path, payload, timeout=timeout))
 
+    def _post_retrying(self, path: str, payload: dict[str, Any], attempts: int = 8) -> dict[str, Any]:
+        """Wait and try again when OpenAI says the rate limit is reached (a large library hits it)."""
+        for attempt in range(attempts):
+            try:
+                return self._post(path, payload)
+            except OpenAIError as exc:
+                if exc.status != 429 or "quota" in str(exc).lower() or attempt == attempts - 1:
+                    raise
+                m = re.search(r"try again in ([\d.]+)\s*(ms|s)", str(exc))
+                wait = (float(m.group(1)) / (1000 if m.group(2) == "ms" else 1)) if m else 2.0 ** attempt
+                time.sleep(min(30.0, wait + 0.5 + attempt))
+        raise AssertionError("unreachable")
+
     def _embed(self, texts: list[str]) -> np.ndarray:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), EMBED_BATCH):
-            data = self._post("/embeddings", {"model": self.embedding_model,
-                                              "input": [t[:8000] for t in texts[start:start + EMBED_BATCH]]})
+            body: dict[str, Any] = {"model": self.embedding_model,
+                                    "input": [t[:8000] for t in texts[start:start + EMBED_BATCH]]}
+            if self.embedding_dimensions:
+                body["dimensions"] = self.embedding_dimensions
+            data = self._post_retrying("/embeddings", body)
             vectors.extend(d["embedding"] for d in sorted(data["data"], key=lambda d: d["index"]))
         arr = np.asarray(vectors, dtype=np.float32)
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
         return arr / np.maximum(norms, 1e-9)
 
-    def _chunk_vectors(self) -> np.ndarray | None:
+    @staticmethod
+    def _embed_text(c: Chunk) -> str:
+        return f"{c.citation()}\n{c.text}\n{' '.join(c.footnotes)}"
+
+    def _embed_library(self) -> None:
+        """Embed every manual that has no vectors yet, file by file, cached per file."""
         if not self.semantic or not self.chunks:
+            self.progress["state"] = "ready"
+            return
+        with self._lock:
+            chunks = list(self.chunks)
+        by_doc: dict[str, list[int]] = {}
+        for i, c in enumerate(chunks):
+            by_doc.setdefault(c.doc, []).append(i)
+
+        def one(doc: str) -> tuple[list[int], np.ndarray] | None:
+            rows = by_doc[doc]
+            path = self.paths.get(doc)
+            vec_path = self._vector_path(path) if path else None
+            if vec_path and vec_path.exists():
+                try:
+                    vecs = np.load(vec_path)
+                    if vecs.shape[0] == len(rows):
+                        return rows, vecs
+                except (OSError, ValueError):
+                    pass
+            vecs = self._embed([self._embed_text(chunks[i]) for i in rows])
+            if vec_path:
+                try:
+                    vec_path.parent.mkdir(parents=True, exist_ok=True)
+                    np.save(vec_path, vecs)
+                except OSError:
+                    pass
+            return rows, vecs
+
+        from concurrent.futures import ThreadPoolExecutor
+        todo = [doc for doc, rows in by_doc.items() if not self._embedded[rows].all()]
+        started = time.time()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            for result in pool.map(lambda d: self._safe(one, d), todo):
+                if result is None:
+                    continue
+                rows, vecs = result
+                with self._lock:
+                    if self.chunks is not chunks and [c.id for c in self.chunks] != [c.id for c in chunks]:
+                        return  # the library changed meanwhile; the next build embeds again
+                    if self._vectors is None or self._vectors.shape[1] != vecs.shape[1]:
+                        self._vectors = np.zeros((len(chunks), vecs.shape[1]), dtype=np.float32)
+                        self._embedded = np.zeros(len(chunks), dtype=bool)
+                    self._vectors[rows] = vecs
+                    self._embedded[rows] = True
+                    self.progress["embedded"] = int(self._embedded.sum())
+        self.progress["state"] = "ready" if self._semantic_error is None else f"keyword only: {self._semantic_error}"
+        if todo:
+            log.info("manuals embedded: %d passages in %.1f s", int(self._embedded.sum()), time.time() - started)
+
+    def _safe(self, fn: Callable[[str], Any], doc: str) -> Any:
+        if self._semantic_error is not None:
             return None
-        if self._vectors is not None:
-            return self._vectors
-        path = self.cache_dir / f"vectors-{re.sub(r'[^a-z0-9.-]', '_', self.embedding_model.lower())}.npy"
-        meta = path.with_suffix(".sig")
         try:
-            if meta.read_text() == self._signature:
-                vectors = np.load(path)
-                if vectors.shape[0] == len(self.chunks):
-                    self._vectors = vectors
-                    return vectors
-        except (OSError, ValueError):
-            pass
-        try:
-            self._vectors = self._embed([f"{c.citation()}\n{c.text}\n{' '.join(c.footnotes)}" for c in self.chunks])
+            return fn(doc)
         except (OpenAIError, KeyError, ValueError) as exc:
             self._semantic_error = str(exc)
             log.warning("embeddings unavailable, using keyword search only: %s", exc)
             return None
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            np.save(path, self._vectors)
-            meta.write_text(self._signature or "")
-        except OSError:
-            pass
-        return self._vectors
+
+    def _chunk_vectors(self) -> np.ndarray | None:
+        """The vectors that are ready; in blocking mode the whole library is embedded first."""
+        if not self.semantic or not self.chunks:
+            return None
+        if not self.background and not self._embedded.all():
+            self._embed_library()
+        return self._vectors if self._vectors is not None and self._embedded.any() else None
+
+    # scope: which product's manuals answer --------------------------------------------
+
+    def scope(self, question: str, product: str | None = None) -> dict[str, Any]:
+        """Which manuals may answer: the product the question or the caller names, else the connected sensor."""
+        if product:
+            docs = mentioned_products(product, self.products)
+            if docs:
+                return {"docs": docs, "source": "requested", "product": product}
+        docs = mentioned_products(question, self.products)
+        if docs:
+            names = sorted({self.products[d].name for d in docs})
+            return {"docs": docs, "source": "question", "product": ", ".join(names[:4])}
+        active = self.active_product()
+        if active:
+            docs = mentioned_products(active, self.products)
+            if docs:
+                return {"docs": docs, "source": "connected sensor", "product": active}
+        return {"docs": None, "source": "all manuals", "product": None}
+
+    def status(self) -> dict[str, Any]:
+        families: Counter = Counter(p.family for p in self.products.values() if p.family)
+        return {**self.progress, "documents": len(self.paths), "passages": len(self.chunks),
+                "families": dict(families.most_common()), "active_product": self.active_product(),
+                "search": "hybrid" if self.semantic else "keyword", "errors": self.errors}
 
     # searching ---------------------------------------------------------------
 
@@ -552,38 +817,60 @@ class KnowledgeBase:
         self.ensure()
         per_doc: dict[str, dict[str, Any]] = {}
         for c in self.chunks:
-            d = per_doc.setdefault(c.doc, {"name": c.doc, "title": c.doc_title, "passages": 0, "pages": 0})
+            d = per_doc.setdefault(c.doc, {"name": c.doc, "title": c.doc_title, "label": doc_label(c.doc),
+                                           "product": self.products.get(c.doc, product_of(c.doc)).name,
+                                           "passages": 0, "pages": 0})
             d["passages"] += 1
             d["pages"] = max(d["pages"], c.page or 0)
         return {"documents": list(per_doc.values()), "errors": self.errors,
-                "search": "hybrid" if self.client.enabled else "keyword", "folder": self.folder.name}
+                "search": "hybrid" if self.client.enabled else "keyword", "folder": self.folder.name,
+                "status": self.status()}
 
-    def search(self, query: str, k: int = 5, document: str | None = None) -> dict[str, Any]:
+    def search(self, query: str, k: int = 5, document: str | None = None,
+               product: str | None = None) -> dict[str, Any]:
         self.ensure()
         query = " ".join(str(query or "").split())[:500]
         if not query:
             raise KnowledgeError("Ask a question or give search words.")
-        if not self.chunks:
-            return {"query": query, "found": False, "hits": [], "mode": "keyword",
-                    "message": "No manual is loaded. Add one under Manuals, or put the PDF in backend/data/knowledge."}
+        with self._lock:
+            chunks, bm25_index, vectors, embedded = self.chunks, self._bm25, self._vectors, self._embedded
+        if not chunks:
+            message = ("The manuals are still being indexed. Ask again in a minute."
+                       if self._building else
+                       "No manual is loaded. Add one under Manuals, or set MANUAL_LIBRARY_DIRS in backend/.env.")
+            return {"query": query, "found": False, "hits": [], "mode": "keyword", "message": message,
+                    "scope": {"source": "none", "product": None}}
         k = int(min(max(k, 1), 12))
-        allowed = np.ones(len(self.chunks), dtype=bool)
+        scope = self.scope(query, product)
+        result = self._ranked(query, k, document, scope["docs"], chunks, bm25_index, vectors, embedded)
+        if not result["found"] and scope["source"] == "connected sensor":
+            # not in the connected sensor's manuals: look in the whole library, and say so
+            scope = {"docs": None, "source": "all manuals (not in the connected sensor's manuals)",
+                     "product": scope["product"]}
+            result = self._ranked(query, k, document, None, chunks, bm25_index, vectors, embedded)
+        result["scope"] = {"source": scope["source"], "product": scope["product"],
+                           "documents": len(scope["docs"]) if scope["docs"] else len(self.paths)}
+        return result
+
+    def _ranked(self, query: str, k: int, document: str | None, docs: set[str] | None, chunks: list[Chunk],
+                bm25_index: BM25 | None, vectors: np.ndarray | None, embedded: np.ndarray) -> dict[str, Any]:
+        allowed = np.ones(len(chunks), dtype=bool)
+        if docs is not None:
+            allowed &= np.array([c.doc in docs for c in chunks])
         if document:
             want = document.lower()
-            allowed = np.array([want in c.doc.lower() or want in c.doc_title.lower() for c in self.chunks])
+            allowed &= np.array([want in c.doc.lower() or want in c.doc_title.lower() for c in chunks])
         terms = tokenize(query)
-        bm25 = self._bm25.scores(terms) if self._bm25 else np.zeros(len(self.chunks))
-        bm25 = bm25 * self._doc_bonus(terms)
-        bm25 = np.where(allowed, bm25, -1.0)
+        bm25 = bm25_index.scores(terms) if bm25_index else np.zeros(len(chunks))
+        bm25 = np.where(allowed, bm25 * self._doc_bonus(terms, chunks), -1.0)
         cosine = None
-        vectors = self._chunk_vectors()
-        if vectors is not None:
+        if self.semantic and vectors is not None and embedded.any():
             try:
                 cosine = vectors @ self._embed([query])[0]
-                cosine = np.where(allowed, cosine, -1.0)
+                cosine = np.where(allowed & embedded, cosine, -1.0)
             except (OpenAIError, KeyError, ValueError) as exc:
                 log.warning("query embedding failed, keyword search only: %s", exc)
-        fused = np.zeros(len(self.chunks))
+        fused = np.zeros(len(chunks))
         for ranking, weight in ((bm25, 1.0), (cosine, SEMANTIC_WEIGHT)):
             if ranking is None:
                 continue
@@ -591,7 +878,7 @@ class KnowledgeBase:
             ranks = np.empty(len(order))
             ranks[order] = np.arange(1, len(order) + 1)
             fused += np.where(ranking > 0, weight / (RRF_K + ranks), 0.0)
-        order = [i for i in np.argsort(-fused, kind="stable") if fused[i] > 0][:k]
+        order = [int(i) for i in np.argsort(-fused, kind="stable") if fused[i] > 0][:k]
         if cosine is not None:
             # keywords cannot match an English question to a German datasheet, so the best matches by
             # meaning always stay in, in place of the weakest fused ones
@@ -601,11 +888,12 @@ class KnowledgeBase:
             order.sort(key=lambda i: -fused[i])
         hits = []
         for i in order:
-            c = self.chunks[i]
+            c = chunks[i]
             hits.append({
                 "id": c.id, "doc": c.doc, "doc_title": c.doc_title, "section": c.section,
                 "section_title": c.section_title, "page": c.page, "printed_page": c.printed_page,
                 "labels": c.labels, "citation": c.citation(), "text": c.text, "footnotes": c.footnotes,
+                "product": self.products.get(c.doc, product_of(c.doc)).name,
                 "keyword_score": round(float(max(bm25[i], 0.0)), 3),
                 "semantic_score": None if cosine is None else round(float(cosine[i]), 3),
                 "url": self.file_url(c),
@@ -615,79 +903,106 @@ class KnowledgeBase:
                 "mode": "hybrid" if cosine is not None else "keyword",
                 **({} if found else {"message": "Nothing in the manuals matches this question."})}
 
-    def _doc_bonus(self, terms: list[str]) -> np.ndarray:
+    def _doc_bonus(self, terms: list[str], chunks: list[Chunk]) -> np.ndarray:
         """A query that names a product ("optoNCDT 5500") prefers that manual's passages."""
-        bonus = np.ones(len(self.chunks))
+        bonus = np.ones(len(chunks))
         wanted = {t for t in terms if any(ch.isdigit() for ch in t)}
         if not wanted:
             return bonus
         titles: dict[str, bool] = {}
-        for i, c in enumerate(self.chunks):
+        for i, c in enumerate(chunks):
             if c.doc not in titles:
                 titles[c.doc] = bool(wanted & set(tokenize(f"{c.doc_title} {c.doc}")))
             if titles[c.doc]:
                 bonus[i] = 1.25
         return bonus
 
+    def file_path(self, name: str) -> Path | None:
+        """The manual file behind a document name, for opening it at a page."""
+        return self.paths.get(name)
+
     @staticmethod
     def file_url(chunk: Chunk) -> str:
-        url = f"/api/knowledge/file/{chunk.doc}"
+        url = f"/api/knowledge/library/{quote(chunk.doc)}"
         return f"{url}#page={chunk.page}" if chunk.page else url
 
     @staticmethod
     def passage(hit: dict[str, Any], n: int) -> dict[str, Any]:
         """A hit in the shape the cockpit's manual card shows (uid, doc, page, section, text), plus the citation."""
-        return {"id": f"P{n}", "uid": hit["id"], "doc": hit["doc"], "page": hit["page"],
-                "section": hit["citation"], "cite": hit["citation"], "text": hit["text"][:1400],
-                **({"footnotes": hit["footnotes"]} if hit["footnotes"] else {})}
+        return {"id": f"P{n}", "uid": hit["id"], "doc": hit["doc"], "page": hit["page"], "url": hit["url"],
+                "section": hit["citation"], "cite": hit["citation"], "product": hit.get("product"),
+                "text": hit["text"][:1400], **({"footnotes": hit["footnotes"]} if hit["footnotes"] else {})}
 
-    def tool_result(self, query: str, document: str | None = None, k: int = 4) -> dict[str, Any]:
+    def tool_result(self, query: str, document: str | None = None, k: int = 4,
+                    product: str | None = None) -> dict[str, Any]:
         """Passages for the copilot's search_manual tool, with the rule for using them."""
-        result = self.search(query, k=k, document=document)
+        result = self.search(query, k=k, document=document, product=product)
         out: dict[str, Any] = {
-            "ok": True, "query": result["query"], "found": result["found"], "documents": len(self.files()),
+            "ok": True, "query": result["query"], "found": result["found"], "documents": len(self.paths),
+            "scope": result.get("scope"),
             "passages": [self.passage(h, n) for n, h in enumerate(result["hits"], start=1)],
             "message": "" if result["found"] else (result.get("message") or "Nothing in the loaded manuals matches this."),
         }
-        out["speak_rule"] = (
-            "Answer only from these passages. Keep exact numbers, units, min/typ/max and test conditions from the "
-            "text and footnotes. Say the model when the value depends on it. Name the section and page (cite)."
-            if result["found"] else "Say that the loaded manuals do not cover this. Do not answer from memory.")
+        out["speak_rule"] = (SPEAK_RULE if result["found"] else
+                             "Say that the loaded manuals do not cover this. Do not answer from memory.")
         return out
 
     # answering -----------------------------------------------------------------
 
-    def answer(self, question: str, k: int = 8, document: str | None = None) -> dict[str, Any]:
-        result = self.search(question, k=k, document=document)
+    def answer(self, question: str, k: int = 8, document: str | None = None,
+               product: str | None = None) -> dict[str, Any]:
+        result = self.search(question, k=k, document=document, product=product)
         hits = result["hits"]
-        base = {"question": result["query"], "found": result["found"], "sources": hits, "search": result["mode"]}
+        base = {"question": result["query"], "found": result["found"], "sources": hits, "search": result["mode"],
+                "scope": result.get("scope")}
         if not result["found"]:
             return {**base, "mode": "none",
                     "answer": "This specification is not mentioned in the provided manuals."}
         if self.client.enabled:
             try:
                 return {**base, "mode": "generated", "model": self.answer_model,
-                        "answer": self._generate(result["query"], hits)}
+                        "answer": self._generate(result["query"], hits, result.get("scope"))}
             except (OpenAIError, KeyError, ValueError) as exc:
                 log.warning("answer generation failed, quoting the manual instead: %s", exc)
         return {**base, "mode": "extractive", "answer": self._extract(result["query"], hits)}
 
-    def _generate(self, question: str, hits: list[dict[str, Any]]) -> str:
+    def _generate(self, question: str, hits: list[dict[str, Any]], scope: dict[str, Any] | None = None) -> str:
         context = "\n\n".join(
-            f"[S{n}] [{h['citation']}]\n{h['text']}"
+            f"[S{n}] [{h['citation']}] (product: {h.get('product') or 'unknown'})\n{h['text']}"
             + (f"\nFootnotes: {' '.join(h['footnotes'])}" if h["footnotes"] else "")
             for n, h in enumerate(hits, start=1))
+        scope_line = ""
+        if scope and scope.get("product"):
+            scope_line = (f"The passages were selected for: {scope['product']} ({scope['source']}). ")
         instructions = (
-            "You are a precision technical assistant for the Micro-Epsilon optoNCDT 5500 (ILD5500) laser sensors. "
-            "The passages come from its datasheets (some in German), operating manuals and setup guides. Answer "
-            "ONLY from the passages given. Never use outside knowledge for specifications, pin assignments or "
-            "tolerances. A datasheet and a manual can both give a value; prefer the one for the exact model and "
-            "interface asked about (for example the EtherCAT or PROFINET variant), and say when they differ. "
+            "You are Epsilon, a precision technical assistant for Micro-Epsilon sensors and measuring systems. "
+            "The passages come from the manufacturer's operating instructions, quick guides, interface manuals, "
+            "datasheets (some in German) and setup guides; each passage names its product. " + scope_line +
+            "Answer ONLY from the passages given. Never use outside knowledge for specifications, pin assignments, "
+            "commands or tolerances. "
+            "One product per statement: never take a value from one product's manual and present it for another "
+            "product, and never mix values of different products in one statement. Say which product (and model "
+            "variant) each value belongs to. If the passages come from several products and the question does "
+            "not say which one is meant, give the value per product with its name, and ask which product is "
+            "meant in one closing sentence. If the passages are about a different product than the one asked "
+            "about, say that the manuals for the asked product do not cover it instead of answering. "
+            "A product's own manual covers its whole system: the sensors, controllers, cables and interfaces it "
+            "describes belong to that product. When a value of a controller depends on the sensor connected to "
+            "it (measuring range, resolution), list it per sensor model from the table instead of refusing. "
+            "A default or factory setting is answered from the factory settings or parameter tables. "
+            "Merged table cells: when a row has fewer values than the header has models, a value spans several "
+            "neighbouring models (for example 'Linearity | ≤ ±0.08 % FSO | ≤ ±0,1...0,2 % FSO' under six models "
+            "means the first value covers the smaller ranges). Decide which cell a model falls under with a row "
+            "that has one value per model: a % FSO value times the measuring range must equal the µm value of "
+            "the same model (0.08 % of 50 mm = 40 µm). Give both the µm and the % FSO value when the table has both. "
+            "A datasheet and a manual can both give a value; prefer the one for the exact model and interface "
+            "asked about (for example the EtherCAT or PROFINET variant), and say when they differ. "
             "Only if the passages contain nothing that answers the question, reply exactly: \"This is not "
             "mentioned in the provided manuals.\" (translated to the language of the question) and nothing else. "
             "If they answer it partly, give what they say and name in one sentence what they leave open; never "
             "add the refusal sentence to an answer. Read an everyday question generously: \"how hot can it get\" "
-            "asks for the operating temperature range. "
+            "asks for the operating temperature range. For safety topics (laser class, supply voltage, "
+            "mounting, hazards) quote the manual's wording and never weaken a warning. "
             "Keep exact values, min/typ/max, units and test conditions, never round. "
             "Read table rows carefully: layout text separates columns with ' | '. A cell can wrap over the "
             "line above and below its row label (for example '< ±7.5 µm' above 'Linearity [6]', '% FSO' below); "
@@ -695,10 +1010,10 @@ class KnowledgeBase:
             "If the value differs between model variants and the question names none, list each variant. "
             "Start with the direct answer, then conditions and caveats. Cite every value with the full citation "
             "given with its passage, including the document, for example [Manual 5500, Section 3.3, Page 12] or "
-            "[Datasheet ILD5500-10DR (de), Page 1]; never shorten it to the section or page alone. Use a Markdown table "
-            "when comparing variants or pins. Write the whole answer in the language the QUESTION is written in, "
-            "never in the language of the passages: some passages are German, and an English question still gets "
-            "an English answer (translate the labels, keep every number and unit exactly).")
+            "[Datasheet ILD5500-10DR (de), Page 1]; never shorten it to the section or page alone. Use a Markdown "
+            "table when comparing variants or pins. Write the whole answer in the language the QUESTION is written "
+            "in, never in the language of the passages: some passages are German, and an English question still "
+            "gets an English answer (translate the labels, keep every number and unit exactly).")
         body: dict[str, Any] = {"model": self.answer_model, "instructions": instructions,
                                 "input": f"Manual passages:\n\n{context}\n\nQuestion (answer in its language): {question}"}
         if self.reasoning_effort and re.match(r"^(gpt-5|o\d)", self.answer_model):

@@ -123,3 +123,102 @@ def test_chat_without_key_is_refused(settings):
     with TestClient(create_app(settings)) as client:
         response = client.post("/api/chat", headers=TOKEN, json={"items": [{"role": "user", "content": "hi"}]})
         assert response.status_code == 503
+
+
+# -- a library of several products: answers come from the right product's manuals -----------------
+
+ILD1420 = """# Operating Instructions optoNCDT 1420
+
+## Technical data
+
+Measuring rate: 4 kHz
+Operating temperature: 0 ... +50 °C
+Laser class 2
+"""
+
+CAPA6200 = """# Operating Instructions capaNCDT 6200
+
+## Technical data
+
+Measuring rate: 20 kHz
+Operating temperature: +10 ... +50 °C
+Capacitive sensor for conductive targets
+"""
+
+
+@pytest.fixture()
+def library(tmp_path):
+    first, second = tmp_path / "uploads", tmp_path / "library"
+    first.mkdir()
+    second.mkdir()
+    (second / "man--optoNCDT-1420--en.md").write_text(ILD1420, encoding="utf-8")
+    (second / "man--capaNCDT-6200--en.md").write_text(CAPA6200, encoding="utf-8")
+    # the same file name in two folders is read once, from the first folder
+    (first / "man--capaNCDT-6200--en.md").write_text(CAPA6200, encoding="utf-8")
+    return [first, second]
+
+
+def docs_of(result):
+    return {h["doc"] for h in result["hits"]}
+
+
+def test_question_naming_a_model_only_reads_that_products_manuals(library):
+    kb = KnowledgeBase(library)
+    assert [p.name for p in kb.files()] == ["man--capaNCDT-6200--en.md", "man--optoNCDT-1420--en.md"]
+    result = kb.search("measuring rate of the ILD1420")
+    assert docs_of(result) == {"man--optoNCDT-1420--en.md"}
+    assert result["scope"]["source"] == "question" and "1420" in result["scope"]["product"]
+
+
+def test_connected_sensor_scopes_a_question_that_names_no_model(library):
+    kb = KnowledgeBase(library, active_product=lambda: "capaNCDT 6200")
+    result = kb.search("operating temperature")
+    assert docs_of(result) == {"man--capaNCDT-6200--en.md"}
+    assert result["scope"] == {"source": "connected sensor", "product": "capaNCDT 6200", "documents": 1}
+
+
+def test_named_model_wins_over_the_connected_sensor(library):
+    kb = KnowledgeBase(library, active_product=lambda: "capaNCDT 6200")
+    assert docs_of(kb.search("operating temperature of the ILD1420")) == {"man--optoNCDT-1420--en.md"}
+    assert docs_of(kb.search("operating temperature", product="ILD1420")) == {"man--optoNCDT-1420--en.md"}
+
+
+def test_not_in_the_sensors_manuals_falls_back_to_the_library_and_says_so(library):
+    kb = KnowledgeBase(library, active_product=lambda: "capaNCDT 6200")
+    result = kb.search("laser class")
+    assert docs_of(result) == {"man--optoNCDT-1420--en.md"}
+    assert result["scope"]["source"].startswith("all manuals (not in the connected sensor")
+
+
+def test_without_model_or_sensor_all_manuals_are_searched(library):
+    result = KnowledgeBase(library).search("operating temperature")
+    assert result["scope"]["source"] == "all manuals" and result["scope"]["product"] is None
+
+
+def test_adding_a_manual_only_indexes_that_file(library):
+    kb = KnowledgeBase(library)
+    kb.search("measuring rate")
+    cached = sorted((library[0] / ".cache" / "rag" / "files").glob("*.json"))
+    assert len(cached) == 2
+    (library[1] / "man--optoNCDT-1320--en.md").write_text(ILD1420.replace("1420", "1320"), encoding="utf-8")
+    assert docs_of(kb.search("measuring rate of the ILD1320")) == {"man--optoNCDT-1320--en.md"}
+    assert len(sorted((library[0] / ".cache" / "rag" / "files").glob("*.json"))) == 3
+
+
+def test_background_index_answers_after_the_first_build(library):
+    kb = KnowledgeBase(library, background=True)
+    result = kb.search("measuring rate of the ILD1420")   # waits briefly for the first build
+    assert docs_of(result) == {"man--optoNCDT-1420--en.md"}
+
+
+def test_library_routes_serve_status_and_files(settings, library):
+    app = create_app(replace(settings, knowledge_dir=library[0], manual_library=(library[1],)))
+    with TestClient(app) as client:
+        tool = client.post("/api/tools/search_manual", headers=TOKEN,
+                           json={"query": "measuring rate", "product": "ILD1420"}).json()
+        assert tool["scope"]["source"] == "requested" and tool["passages"][0]["doc"] == "man--optoNCDT-1420--en.md"
+        url = tool["passages"][0]["url"]
+        assert url.startswith("/api/knowledge/library/") and client.get(url.split("#")[0]).status_code == 200
+        assert client.get("/api/knowledge/library/nothing.pdf").status_code == 404
+        status = client.get("/api/knowledge/library").json()
+        assert status["documents"] == 2 and set(status["families"]) == {"optoncdt", "capancdt"}

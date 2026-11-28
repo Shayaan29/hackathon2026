@@ -538,3 +538,5 @@ button { cursor: pointer; }
 .manual-table table { border-collapse: collapse; font-size: 13px; width: 100%; }
 .manual-table th, .manual-table td { border: 1px solid var(--hair-strong); padding: 4px 8px; text-align: left; vertical-align: top; }
 .manual-table th { background: rgba(255, 255, 255, 0.6); font-weight: 600; }
+
+.man-scope { margin: 0; font-size: 13px; color: var(--laser-deep); }

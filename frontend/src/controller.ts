@@ -546,8 +546,9 @@ class Controller {
       }
       case "search_manual": {
         const query = String(args.query ?? "").trim();
+        const product = typeof args.product === "string" ? args.product.trim() : "";
         try {
-          const result = await api.searchManualTool(query);
+          const result = await api.searchManualTool(query, product);
           const passages = Array.isArray(result.passages) ? (result.passages as ManualPassage[]) : [];
           store().patch({ manualHit: { query, passages, message: String(result.message ?? "") } });
           return result;
