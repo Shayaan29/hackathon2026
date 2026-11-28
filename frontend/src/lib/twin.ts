@@ -90,6 +90,8 @@ const RANGE_BOTTOM = 0.68;
 const MIN_PART = 0.012;
 /** without a taught empty plate, the farthest surface of the last minutes counts as the plate */
 const PLATE_MEMORY_S = 120;
+/** a surface this close to the farthest one is the farthest one */
+const PLATE_GAP_UM = 300;
 
 function glowTexture(): THREE.Texture {
   const c = document.createElement("canvas");
@@ -451,8 +453,12 @@ export class Twin {
       rig.color.lerp(STATE_COLOR[state], Math.min(dt * 6, 1));
       const flicker = state === "invalid" ? (Math.sin(t * 40) > 0 ? 1 : 0.05) : 1;
 
-      // the plate: where the empty plate was taught, otherwise the farthest surface of the last minutes
-      const plateUm = part?.emptyUm ?? this.farthest(rig);
+      // the plate: where the empty plate was taught, otherwise the farthest surface of the last minutes. When the
+      // taught part itself is that farthest surface (the plate is out of range or was not seen for minutes), the
+      // part would have no height: then the far end of the range stands in for the plate, so the part stays visible
+      const far = this.farthest(rig);
+      const partIsFarthest = far !== null && !lost && part?.state === "match" && Math.abs(far - (value as number)) <= PLATE_GAP_UM;
+      const plateUm = part?.emptyUm ?? (partIsFarthest ? null : far);
       const plateTarget = this.yOf(rig.cfg, plateUm ?? rig.cfg.extHigh ?? rig.cfg.high);
       rig.plateY += (plateTarget - rig.plateY) * Math.min(dt * 4, 1);
       // the surface the laser meets: the part's top, never below the plate

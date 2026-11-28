@@ -44,6 +44,7 @@ FRAME_MIN_VALID = 0.6     # a frame needs this share of valid readings, otherwis
 PRESENT_S = 0.5           # something must lie on the plate this long to count as a part
 GONE_S = 0.15             # the plate must show this long to end a part
 LOST_S = 3.0              # no valid reading this long also ends a part
+GONE_NO_PLATE_S = 0.3     # without a taught plate: no valid reading this long ends a part
 CATCH_UP_S = 2.0          # at most this much signal is looked at in one go
 LOOK_BACK_S = 1.0         # when the station becomes ready it starts this far back: the part just taught counts
 MOVED_UM = 150.0          # a steady surface this far from the part's own is another part
@@ -122,6 +123,8 @@ class Station:
         self.partcheck = partcheck
         self.path = path
         self.on_part = on_part
+        # where the camera picture of a part is, if there is one (set by the engine)
+        self.photo_of: Callable[[str, int], str | None] | None = None
         self.lines = {sid: _Line() for sid in self.sensors}
         self._lock = threading.RLock()
         self._ids = 0
@@ -183,8 +186,9 @@ class Station:
 
     def ready(self, sid: str) -> bool:
         track = self.partcheck.tracks.get(sid)
-        return bool(track is not None and self.partcheck.supported(sid) and track.reference is not None
-                    and track.empty_um is not None)
+        # the empty plate is optional: when the plate is outside the measuring range nothing valid is measured
+        # without a part, and then "no reading" stands for the empty plate
+        return bool(track is not None and self.partcheck.supported(sid) and track.reference is not None)
 
     def new_run(self, sid: str, now: float) -> dict[str, Any]:
         """Start a new run: the part log, the counters and the rhythm start from zero."""
@@ -261,12 +265,17 @@ class Station:
     def _follow(self, sid: str, line: _Line, buf: SensorBuffer, now: float) -> list[Event]:
         track = self.partcheck.tracks[sid]
         ref, empty = track.reference, track.empty_um
-        assert ref is not None and empty is not None
+        assert ref is not None
         band = self.partcheck.empty_band(track)
         events: list[Event] = []
         closed = False
         for t0, t1, value in self._frames(line, buf):
-            kind = "none" if not math.isfinite(value) else ("plate" if abs(value - empty) <= band else "object")
+            if not math.isfinite(value):
+                kind = "plate" if empty is None else "none"      # no plate taught: no reading = nothing there
+            elif empty is not None and abs(value - empty) <= band:
+                kind = "plate"
+            else:
+                kind = "object"
             if line.visit is None:
                 if kind == "object":
                     if line.object_since is None:
@@ -284,7 +293,7 @@ class Station:
             elif kind == "plate":
                 line.lost_since = None
                 line.plate_since = t0 if line.plate_since is None else line.plate_since
-                if t1 - line.plate_since >= GONE_S:
+                if t1 - line.plate_since >= (GONE_S if empty is not None else GONE_NO_PLATE_S):
                     closed = self._close(sid, line, line.plate_since) or closed
             else:
                 line.lost_since = t0 if line.lost_since is None else line.lost_since
@@ -294,7 +303,7 @@ class Station:
         reading = track.reading
         visit = line.visit
         if visit is not None and reading is not None and reading.steady and reading.position_um is not None \
-                and line.plate_since is None and abs(reading.position_um - empty) > band:
+                and line.plate_since is None and (empty is None or abs(reading.position_um - empty) > band):
             position = reading.position_um
             if len(visit.steady) >= 3 and abs(position - float(np.median(visit.steady))) > max(
                     ref.half_width_um, MOVED_UM):
@@ -460,6 +469,7 @@ class Station:
         data = asdict(record)
         data["position"] = cfg.pos(record.position_um, signed=False)
         data["height"] = None if record.height_um is None else cfg.pos(record.height_um, signed=False)
+        data["photo"] = self.photo_of(sid, record.number) if self.photo_of else None
         return data
 
     def public(self, sid: str, now: float, limit: int = 0) -> dict[str, Any]:
@@ -474,8 +484,8 @@ class Station:
             if not self.partcheck.supported(sid):
                 message = "The quality station needs a sensor that reports micrometres."
             elif not ready:
-                message = ("Teach the empty plate and a good part in the part check: then every part that rests "
-                           "under the sensor is counted and measured.")
+                message = ("Teach a good part in the part check (and the empty plate, if the sensor can see it): "
+                           "then every part that rests under the sensor is counted.")
             elif not records and line.visit is None:
                 message = "Ready: every part that rests under the sensor is counted and measured."
             else:

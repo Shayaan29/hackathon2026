@@ -294,3 +294,69 @@ def test_a_report_on_a_jam_shows_the_heights_of_the_last_parts(client):
     assert any("stuck" in c for c in rep["causes"])
     html = client.get(f"/report/{jam.id}").text
     assert "part number" in html and "Time under the sensor" in html
+
+
+def test_the_run_report_lists_every_part_and_alert(client):
+    engine = client.app.state.engine
+    run_line(engine, "s1", [(PART, 2.0), (OTHER, 2.0)])
+    page = client.get("/run-report/s1")
+    assert page.status_code == 200
+    assert "Quality station" in page.text and "different part" in page.text and "Different part" in page.text
+    assert page.text.count("<tr class='good'>") == 2 and page.text.count("<tr class='different'>") == 1
+    assert client.get("/run-report/nope").status_code in (400, 404)
+
+
+def test_teaching_the_plate_as_the_part_is_refused(line):
+    from app.partcheck import PartCheckError
+    line.hold(PLATE, 2.0)
+    line.check.learn(line.sid, line.buf, "empty")
+    with pytest.raises(PartCheckError, match="empty plate"):
+        line.check.learn(line.sid, line.buf, "part")              # nothing in the laser spot
+
+
+def test_teaching_the_empty_plate_where_the_part_was_taught_is_refused(line):
+    from app.partcheck import PartCheckError
+    line.hold(PLATE, 2.0)
+    line.check.learn(line.sid, line.buf, "part")                  # the mix-up: the plate taught as the part
+    with pytest.raises(PartCheckError, match="Forget what was taught"):
+        line.check.learn(line.sid, line.buf, "empty")
+
+
+def test_without_a_visible_plate_no_reading_stands_for_the_empty_plate(line):
+    nothing = float("nan")                                   # the plate is outside the measuring range
+    line.hold(nothing, 1.0)
+    line.hold(PART, 2.0)
+    line.check.learn(line.sid, line.buf, "part")
+    line.hold(nothing, 1.0)
+    line.part(PART, 2.0, 0)
+    line.hold(nothing, 1.0)
+    line.part(OTHER, 2.0, 0)
+    line.hold(nothing, 1.0)
+    assert [r.verdict for r in line.records] == ["good", "good", "different"]
+    assert line.records[1].height_um is None
+
+
+JPEG = b"\xff\xd8\xff\xe0" + b"0" * 200 + b"\xff\xd9"
+
+
+def test_a_part_photo_shows_in_the_passport_the_log_and_the_alert_report(client):
+    engine = client.app.state.engine
+    assert client.post("/api/parts/s1/2/photo", content=JPEG).status_code == 401
+    run_line(engine, "s1", [(PART, 2.0), (OTHER, 2.0)])
+    up = client.post("/api/parts/s1/3/photo", content=JPEG, headers=TOKEN)
+    assert up.json()["url"] == "/photos/s1/3.jpg"
+    assert client.post("/api/parts/s1/3/photo", content=b"not a jpeg", headers=TOKEN).status_code == 400
+    assert client.get("/photos/s1/3.jpg").content == JPEG
+    assert client.get("/photos/s1/2.jpg").status_code == 404
+    records = client.get("/api/parts/s1?limit=5").json()["records"]
+    assert records[0]["photo"] == "/photos/s1/3.jpg" and records[1]["photo"] is None
+    page = client.get("/part/s1/3").text
+    assert "Part 3" in page and "Different part" in page and "/photos/s1/3.jpg" in page
+    assert "No camera picture" in client.get("/part/s1/2").text
+    assert client.get("/part/s1/99").status_code == 404
+    wrong = engine.last_event("wrong_part", "s1")
+    rep = report.build(engine, wrong.id)
+    assert rep["part"] == 3 and rep["photo"] == "/photos/s1/3.jpg"
+    assert "/photos/s1/3.jpg" in client.get(f"/report/{wrong.id}").text
+    client.post("/api/parts/s1/reset", headers=TOKEN)
+    assert client.get("/photos/s1/3.jpg").status_code == 404

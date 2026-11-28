@@ -65,6 +65,7 @@ export function Header() {
   const mission = useStore((s) => s.mission);
   const soundOn = useStore((s) => s.soundOn);
   const phones = useStore((s) => s.status?.clients.phone ?? 0);
+  const cameraOn = useStore((s) => s.camera.on);
   const tokenOk = useStore((s) => s.tokenOk);
   const manualCount = useStore((s) => s.knowledge?.documents.length ?? 0);
   const patch = useStore((s) => s.patch);
@@ -93,6 +94,10 @@ export function Header() {
         <button className={`tool ${manualCount ? "is-on" : ""}`} onClick={() => patch({ manualsOpen: true })}
                 title="Manuals the AI reads">
           <Icon name="book" /><span>{manualCount ? `Manuals (${manualCount})` : "Manuals"}</span>
+        </button>
+        <button className={`tool ${cameraOn ? "is-on" : ""}`} onClick={() => void controller.toggleCamera()}
+          title="A camera photographs every part while it rests under the sensor (C)">
+          <Icon name="camera" /><span>{cameraOn ? "Camera on" : "Camera"}</span>
         </button>
         <button className="tool" onClick={() => patch({ qrOpen: true })} title="Phones (Q)">
           <Icon name="phone" /><span>{phones ? `${phones} phone${phones === 1 ? "" : "s"}` : "Phones"}</span>

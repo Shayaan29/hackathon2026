@@ -101,6 +101,8 @@ class DllLibrary:
         if loader is None:
             raise MedaqlibError("MEDAQLib is a Windows library: run the cockpit on Windows to use it.")
         try:
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(str(path.parent))        # MEDAQLib loads helpers from its own folder
             self.dll = loader(str(path))
         except OSError as exc:
             hint = (" The DLL must match Python: 64-bit Python needs Release-x64/MEDAQLib.dll."
@@ -190,13 +192,31 @@ class DllLibrary:
         return buf.value.decode("cp1252", "replace").strip()
 
 
+def _in_folder(folder: Path) -> list[Path]:
+    """Where MEDAQLib.dll sits inside an unpacked MEDAQLib folder (64-bit first)."""
+    return [folder / "Release-x64" / "MEDAQLib.dll", folder / "MEDAQLib.dll",
+            folder / "Snippets" / "Python" / "MEDAQLib.dll"]
+
+
 def find_dll(configured: str | None) -> Path:
-    """The DLL to load: the configured path, MEDAQLIB_DLL, or the usual install places."""
-    candidates = [configured] if configured else []
-    candidates += [os.environ.get("MEDAQLIB_DLL", ""), *DLL_PLACES]
-    for item in candidates:
-        if item and Path(item).is_file():
-            return Path(item)
+    """The DLL to load: the configured file or folder, MEDAQLIB_DLL, the usual install places, or a
+    MEDAQLib-* folder in Documents (also in OneDrive)."""
+    candidates: list[Path] = []
+    for item in (configured, os.environ.get("MEDAQLIB_DLL", "")):
+        if item:
+            path = Path(item.strip().strip('"'))
+            candidates += _in_folder(path) if path.is_dir() else [path]
+    candidates += [Path(x) for x in DLL_PLACES]
+    home = Path.home()
+    for docs in (home / "Documents", home / "OneDrive" / "Documents", home / "OneDrive" / "Dokumente",
+                 home / "Dokumente", home / "Downloads"):
+        if docs.is_dir():
+            for folder in sorted(docs.glob("MEDAQLib*"), reverse=True):
+                if folder.is_dir():
+                    candidates += _in_folder(folder)
+    for path in candidates:
+        if path.is_file():
+            return path
     if configured:
         raise MedaqlibError(f"MEDAQLib.dll was not found at {configured}. Install MEDAQLib from the Micro-Epsilon "
                             "website and set source.dll_path to Release-x64/MEDAQLib.dll.")

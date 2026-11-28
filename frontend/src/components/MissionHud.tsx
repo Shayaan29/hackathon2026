@@ -80,6 +80,7 @@ function StationHud({ sensor }: { sensor: SensorInfo }) {
         <span className="is-good">{station.good} good</span>
         <span className={station.different ? "is-bad" : ""}>{station.different} different</span>
       </span>
+      {last?.photo && <img className={`hud-station-photo is-${last.verdict}`} src={`${last.photo}?n=${last.number}`} alt={`Part ${last.number}`} key={`photo-${last.number}`} />}
       {last && (
         <span className={`hud-station-last is-${last.verdict}`} key={`last-${last.number}`}>
           Part {last.number}: {height !== null ? `${(height * scale).toFixed(shown.display ? 3 : 1)} ${shown.unit} high` : last.verdict}

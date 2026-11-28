@@ -180,9 +180,11 @@ export function PhoneApp() {
             <ol className="ph-parts-list">
               {parts.map((p) => (
                 <li key={p.number} className={`is-${p.verdict}`}>
-                  <span>Part {p.number}</span>
-                  <span>{p.height ?? "–"}</span>
-                  <span>{p.verdict === "good" ? "taught part" : "different"}</span>
+                  <a href={`/part/${encodeURIComponent(p.sensor)}/${p.number}`} target="_blank" rel="noreferrer">
+                    <span>Part {p.number}{p.photo ? " 📷" : ""}</span>
+                    <span>{p.height ?? "–"}</span>
+                    <span>{p.verdict === "good" ? "taught part" : "different"}</span>
+                  </a>
                 </li>
               ))}
             </ol>

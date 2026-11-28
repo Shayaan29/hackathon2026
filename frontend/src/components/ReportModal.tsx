@@ -9,7 +9,14 @@ export function ReportModal() {
   const publicUrl = useStore((s) => s.publicUrl);
   const patch = useStore((s) => s.patch);
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const path = reportId ? `/report/${encodeURIComponent(reportId)}` : "";
+  // "run:<sensor>" is the run report of the quality station, anything else the report on one alert
+  // "part:<sensor>:<number>" is the passport of one part
+  const run = reportId?.startsWith("run:") ? reportId.slice(4) : null;
+  const passport = reportId?.startsWith("part:") ? reportId.slice(5).split(":") : null;
+  const path = !reportId ? "" : run ? `/run-report/${encodeURIComponent(run)}`
+    : passport ? `/part/${encodeURIComponent(passport[0])}/${encodeURIComponent(passport[1])}`
+    : `/report/${encodeURIComponent(reportId)}`;
+  const title = run ? "Run report" : passport ? `Part passport: part ${passport[1]}` : "Incident report";
   const phoneUrl = `${publicUrl || window.location.origin}${path}`;
   const svg = useMemo(() => {
     const qr = qrcode(0, "M");
@@ -22,9 +29,9 @@ export function ReportModal() {
 
   return (
     <div className="sheet-backdrop" onClick={close}>
-      <section className="sheet sheet-report" role="dialog" aria-label="Incident report" onClick={(e) => e.stopPropagation()}>
+      <section className="sheet sheet-report" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <header className="sheet-head">
-          <h2>Incident report</h2>
+          <h2>{title}</h2>
           <div className="sheet-tools">
             <button className="quiet-btn" onClick={() => frameRef.current?.contentWindow?.print()}>Save as PDF</button>
             <a className="quiet-btn" href={path} target="_blank" rel="noreferrer">Open in a new tab</a>
@@ -32,10 +39,10 @@ export function ReportModal() {
           </div>
         </header>
         <div className="report-body">
-          <iframe ref={frameRef} src={`${path}?embed=1`} title="Incident report" />
+          <iframe ref={frameRef} src={`${path}?embed=1`} title={title} />
           <aside className="report-take">
             <div className="report-qr" dangerouslySetInnerHTML={{ __html: svg }} />
-            <p>Scan to take this report with you.</p>
+            <p>{passport ? "Scan to take this part's passport with you." : "Scan to take this report with you."}</p>
             {!publicUrl && <p className="muted">Phones need the public tunnel address, set under Phones.</p>}
           </aside>
         </div>

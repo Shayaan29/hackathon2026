@@ -119,6 +119,7 @@ export function PartsPanel() {
                 <button className="solid-btn" onClick={() => chart("parts")}>Height of every part</button>
                 <button className="btn" onClick={() => chart("part_counts")}>Bar chart</button>
                 <button className="btn" onClick={() => chart("part_heights")}>Height spread</button>
+                <button className="btn" onClick={() => patch({ partsFor: null, reportId: `run:${sensor}` })}>Run report and QR</button>
                 <a className="btn" href={api.partsCsvUrl(sensor)} download>Download for Excel</a>
                 {!confirm && <button className="quiet-btn" onClick={() => setConfirm(true)}>New run</button>}
                 {confirm && (
@@ -139,8 +140,9 @@ export function PartsPanel() {
                     </thead>
                     <tbody>
                       {records.map((r) => (
-                        <tr key={r.number} className={`is-${r.verdict}`}>
-                          <td>{r.number}</td>
+                        <tr key={r.number} className={`is-${r.verdict} is-link`} title="Open the part passport with its QR code"
+                          onClick={() => patch({ partsFor: null, reportId: `part:${sensor}:${r.number}` })}>
+                          <td>{r.number}{r.photo ? <> {"📷"}</> : null}</td>
                           <td>{clock(r.t_start)}</td>
                           <td className="num">{length(r.height_um)}</td>
                           <td><span className={`verdict verdict-${r.verdict}`}>{r.verdict === "good" ? "taught part" : "different part"}</span></td>

@@ -105,6 +105,9 @@ export const api = {
   partsNewRun: (sensor: string) =>
     post<StationState & { sensor: string }>(`/api/parts/${encodeURIComponent(sensor)}/reset`),
   partsCsvUrl: (sensor: string) => `/api/parts/${encodeURIComponent(sensor)}/csv`,
+  partPhoto: (sensor: string, number: number, photo: Blob) =>
+    request<{ ok: boolean; url: string }>(`/api/parts/${encodeURIComponent(sensor)}/${number}/photo`,
+      { method: "POST", body: photo, headers: { "Content-Type": "image/jpeg" } }),
   createReport: (eventId?: string) =>
     post<{ ok: boolean; id?: string; title?: string; error?: string }>("/api/tools/create_report", { event_id: eventId }),
   // manuals

@@ -144,6 +144,8 @@ export interface PartRecord {
   /** the height and the top surface as the sensor writes them, e.g. "6.0012 mm" */
   height?: string | null;
   position?: string;
+  /** the camera picture of the part, if the cockpit's camera was on */
+  photo?: string | null;
 }
 
 export interface StationState {

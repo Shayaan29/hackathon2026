@@ -139,6 +139,8 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
     involved = [sid] + related
     sheet = sensor_advice.causes_and_actions(event, cfg, related)
     causes, actions = sheet if sheet is not None else _causes_and_actions(event, cfg.unit, related)
+    part_no = part_at(engine, sid, event["t"]) if event["kind"] in STATION_KINDS else None
+    photo = engine.photos.url(sid, part_no) if part_no else None
 
     charts: list[dict[str, Any]] = [{
         "type": "signal", "title": f"{engine.settings.sensor(s).name} around the alert",
@@ -201,7 +203,10 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
         "observations": observations, "causes": causes, "actions": actions,
         "timeline": [{"t": e["t"], "kind": e["kind"], "severity": e["severity"], "summary": e["summary"]}
                      for e in timeline],
-        "charts": charts, "ticket": ticket,
+        "charts": charts, "ticket": ticket, "part": part_no, "photo": photo,
+        "photo_html": (f"<section><h2>Camera</h2><figure><img src='{photo}' style='width:100%;border-radius:10px'>"
+                       f"<figcaption>Part {part_no} under the sensor when the alert came</figcaption></figure>"
+                       f"<p><a href='/part/{sid}/{part_no}'>Part passport</a></p></section>") if photo else "",
     }
 
 
@@ -421,6 +426,7 @@ def render_html(report: dict[str, Any], embed: bool = False) -> str:
 <main>
 <section><h2>What happened</h2><p class="summary">{_esc(event['summary'])}</p></section>
 <section class="meta">{meta}</section>
+{report.get("photo_html", "")}
 <section><h2>Measured</h2><ul>{facts}</ul>{f'<ul>{obs}</ul>' if obs else ''}</section>
 <section><h2>{charts_heading}</h2>{charts}</section>
 <section><h2>Likely causes</h2><ul>{causes}</ul></section>
@@ -433,3 +439,161 @@ def render_html(report: dict[str, Any], embed: bool = False) -> str:
 (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>{{b.textContent='Copied';}}).catch(()=>{{
 const r=document.createRange();r.selectNodeContents(document.getElementById('ticket'));const s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent='Selected: press Ctrl+C';}});}}</script>
 </body></html>"""
+
+
+# -- the run report: every part of the run and every alert, one page -------------------------------------
+
+RUN_KINDS = ("wrong_part", "jam", "double_feed", "trend", "out_of_range", "invalid")
+
+
+def render_run_html(engine: Engine, sid: str, embed: bool = False) -> str:
+    """What the quality station saw in this run: counts, the alerts, the heights and every part."""
+    cfg = engine.settings.sensor(sid)
+    now = time.time()
+    station = engine.station.public(sid, now)
+    records = engine.station.records(sid)
+    track = engine.partcheck.tracks.get(sid)
+    display = cfg.display.as_dict() if cfg.display else None
+    scale = float(display["scale"]) if display else 1.0
+    shown = display["unit"] if display else cfg.unit
+    digits = 3 if display else 1
+
+    def length(um: float | None) -> str:
+        return "–" if um is None else f"{um * scale:.{digits}f} {shown}"
+
+    started = station.get("run_started") or (records[0].t_start if records else now)
+    clock = lambda t: datetime.fromtimestamp(t).strftime("%H:%M:%S")  # noqa: E731
+    alerts = [e for e in engine.events if e.sensor == sid and e.kind in RUN_KINDS and e.t >= started - 1]
+    meta = [("Sensor", f"{cfg.name}, {cfg.model or ''}".strip(", ")),
+            ("Run started", datetime.fromtimestamp(started).strftime("%d %b %Y, %H:%M:%S")),
+            ("Report written", datetime.fromtimestamp(now).strftime("%H:%M:%S"))]
+    if track is not None and track.reference is not None:
+        ref = track.reference
+        if track.empty_um is not None:
+            meta.append(("Taught part", f"{length(track.empty_um - ref.center_um)} high, ± {length(ref.half_width_um)}"))
+        else:
+            meta.append(("Taught part", f"reads {length(ref.center_um)}, ± {length(ref.half_width_um)}"))
+    meta_html = "".join(f"<div><b>{_esc(k)}</b>{_esc(v)}</div>" for k, v in meta)
+    counts = [("Parts", station["parts"]), ("Taught part", station["good"]), ("Different", station["different"]),
+              ("Yield", f"{station['yield_percent']:.0f} %" if station["yield_percent"] is not None else "–"),
+              ("Possible jams", station["jams"]), ("Possible double feeds", station["double_feeds"])]
+    counts_html = "".join(f"<div><b>{_esc(k)}</b><span class='big'>{_esc(v)}</span></div>" for k, v in counts)
+    trend = station.get("trend")
+    trend_txt = ""
+    if trend and trend.get("clear"):
+        left = trend.get("parts_to_limit")
+        trend_txt = (f"The good parts get {trend['direction']} by {abs(trend['slope_um_per_part']):.1f} µm per part"
+                     + (f"; at this rate they leave the band in about {left:.0f} parts." if left is not None else "."))
+    elif trend:
+        trend_txt = "No trend in the heights of the good parts."
+    chart = _parts_chart(engine, sid)
+    if chart is not None and records:
+        heights = [r for r in records if r.height_um is not None][-200:]
+        chart.update({"x": [r.number for r in heights], "v": [r.height_um for r in heights],
+                      "title": f"Height of every part ({len(heights)} parts)"})
+    chart_html = _chart_html(chart, cfg.unit) if chart is not None and chart["x"] else ""
+    alert_rows = "".join(
+        f"<tr><td>{clock(e.t)}</td><td><span class='chip {e.severity}'>{_esc(KIND_TITLE.get(e.kind, e.kind))}</span>"
+        f"{_esc(e.summary)}</td></tr>" for e in alerts[-60:])
+    words = {"jam": "possible jam", "double_feed": "possible double feed", "unsteady": "never steady"}
+    part_rows = "".join(
+        f"<tr class='{r.verdict}'><td><a href='/part/{sid}/{r.number}'>{r.number}</a>"
+        f"{' 📷' if engine.photos.has(sid, r.number) else ''}</td><td>{clock(r.t_start)}</td><td>{length(r.height_um)}</td>"
+        f"<td>{'taught part' if r.verdict == 'good' else '<b>different part</b>'}</td><td>{r.dwell_s:.1f} s</td>"
+        f"<td>{_esc(', '.join(words.get(f, f) for f in r.flags))}</td></tr>" for r in reversed(records[-300:]))
+    extra = "<style>.counts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 18px}.counts b{display:block;" \
+            "font-weight:500;color:var(--muted);font-size:13px}.counts .big{font-size:28px;font-weight:600}" \
+            "tr.different td{background:#fdecee}td{padding:5px 8px;border-bottom:1px solid var(--line)}" \
+            ".parts th{text-align:left;padding:5px 8px;color:var(--muted);font-weight:500}</style>"
+    return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run report: {_esc(cfg.name)}</title><style>{STYLE}</style>{extra}</head>
+<body class="{'embed' if embed else ''}"><div class="doc">
+<div class="actions"><button class="primary" onclick="window.print()">Save as PDF</button></div>
+<header><div class="brand">Run report from {_esc(engine.settings.cockpit.title)}</div>
+<h1>Quality station: {_esc(cfg.name)}</h1>
+<div class="sub">Every part that rested under the sensor and every alert of this run, for {_esc(engine.settings.cockpit.team)}</div></header>
+<main>
+<section class="counts">{counts_html}</section>
+<section class="meta">{meta_html}</section>
+{f'<section><h2>Trend</h2><p>{_esc(trend_txt)}</p></section>' if trend_txt else ''}
+{f'<section><h2>Measurements</h2>{chart_html}</section>' if chart_html else ''}
+<section><h2>Alerts ({len(alerts)})</h2><table>{alert_rows or '<tr><td class=muted>No alerts in this run.</td></tr>'}</table></section>
+<section><h2>Every part, newest first</h2><table class="parts"><tr><th>Part</th><th>Time</th><th>Height</th><th>Verdict</th><th>Stay</th><th>Note</th></tr>
+{part_rows or '<tr><td colspan=6 class=muted>No parts yet.</td></tr>'}</table></section>
+</main></div></body></html>"""
+
+
+# -- the part passport: one part, one page, one QR code ------------------------------------------------
+
+def part_at(engine: Engine, sid: str, t: float) -> int | None:
+    """The number of the part that lay under the sensor at time t (the one there now counts too)."""
+    for r in reversed(engine.station.records(sid, 200)):
+        if r.t_start - 1.0 <= t <= r.t_end + 0.5:
+            return r.number
+    line = engine.station.lines.get(sid)
+    if line is not None and line.visit is not None and t >= line.visit.start - 1.0:
+        return line.next_number
+    return None
+
+
+def render_passport_html(engine: Engine, sid: str, number: int, embed: bool = False) -> str | None:
+    cfg = engine.settings.sensor(sid)
+    record = next((r for r in engine.station.records(sid) if r.number == number), None)
+    if record is None:
+        return None
+    display = cfg.display.as_dict() if cfg.display else None
+    scale = float(display["scale"]) if display else 1.0
+    shown = display["unit"] if display else cfg.unit
+    digits = 4 if display else 1
+
+    def length(um: float | None, signed: bool = False) -> str:
+        if um is None:
+            return "–"
+        return f"{um * scale:+.{digits}f} {shown}" if signed else f"{um * scale:.{digits}f} {shown}"
+
+    good = record.verdict == "good"
+    track = engine.partcheck.tracks.get(sid)
+    taught = "–"
+    if track is not None and track.reference is not None:
+        ref = track.reference
+        taught = (f"{length(track.empty_um - ref.center_um)} high, ± {length(ref.half_width_um)}"
+                  if track.empty_um is not None else f"reads {length(ref.center_um)}, ± {length(ref.half_width_um)}")
+    words = {"jam": "possible jam", "double_feed": "possible double feed", "unsteady": "never lay still"}
+    rows = [("Verdict", "the taught part" if good else "a different part"),
+            ("Height above the plate", length(record.height_um)),
+            ("Top surface (sensor reading)", length(record.position_um)),
+            ("Difference to the taught part", length(record.deviation_um, signed=True)),
+            ("Taught part", taught),
+            ("Under the sensor", f"{datetime.fromtimestamp(record.t_start).strftime('%d %b %Y, %H:%M:%S')}, "
+                                 f"{record.dwell_s:.1f} s"),
+            ("Time since the part before", "–" if record.gap_s is None else f"{record.gap_s:.1f} s"),
+            ("Notes", ", ".join(words.get(f, f) for f in record.flags) or "none"),
+            ("Measured by", f"{cfg.name}, {cfg.model}")]
+    facts = "".join(f"<div><b>{_esc(k)}</b>{_esc(v)}</div>" for k, v in rows)
+    alerts = [e for e in engine.events if e.sensor == sid and record.t_start - 1.0 <= e.t <= record.t_end + 0.5]
+    alert_rows = "".join(f"<li><span class='chip {e.severity}'>{_esc(KIND_TITLE.get(e.kind, e.kind))}</span>"
+                         f"{_esc(e.summary)}</li>" for e in alerts)
+    photo = engine.photos.url(sid, number)
+    photo_html = (f"<figure class='photo'><img src='{photo}' alt='Part {number} under the sensor'>"
+                  f"<figcaption>The camera picture taken while part {number} lay under the sensor</figcaption></figure>"
+                  if photo else "<p class='muted'>No camera picture: switch the camera on in the cockpit.</p>")
+    extra = ("<style>.verdict{display:inline-block;padding:6px 14px;border-radius:8px;font-weight:700;font-size:18px;"
+             f"background:{'#138a5e' if good else '#d7263d'};color:#fff}}.photo img{{width:100%;border-radius:10px;"
+             "border:1px solid var(--line)}.photo figcaption{color:var(--muted);font-size:13px;margin-top:6px}"
+             ".facts{display:grid;grid-template-columns:1fr 1fr;gap:10px}.facts div{background:#f4f6f8;"
+             "border-radius:8px;padding:8px 12px}.facts b{display:block;font-weight:500;color:var(--muted);"
+             "font-size:13px}</style>")
+    return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part {number}: passport</title><style>{STYLE}</style>{extra}</head>
+<body class="{'embed' if embed else ''}"><div class="doc">
+<div class="actions"><button class="primary" onclick="window.print()">Save as PDF</button></div>
+<header><div class="brand">Part passport from {_esc(engine.settings.cockpit.title)}</div>
+<h1>Part {number}</h1><div class="sub"><span class="verdict">{'Taught part' if good else 'Different part'}</span></div></header>
+<main>
+<section>{photo_html}</section>
+<section class="facts">{facts}</section>
+<section><h2>Alerts while it was there</h2>{f'<ul>{alert_rows}</ul>' if alert_rows else '<p class=muted>None.</p>'}</section>
+<section><p class="muted"><a href="/run-report/{_esc(sid)}">The whole run</a></p></section>
+</main></div></body></html>"""

@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Callable
 
 import httpx
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
@@ -25,6 +25,7 @@ from .knowledge_api import add_routes as add_knowledge_routes
 from .manual_rag import KnowledgeBase as ManualRag
 from .openai_client import OpenAIClient
 from .partcheck import PartCheckError
+from .photos import PhotoError
 from .realtime import ALERT_PREFIX, RealtimeError, create_client_secret
 from .station import StationError
 
@@ -252,6 +253,7 @@ def create_app(settings: Settings | None = None,
         sid = sensor_or_400(sensor)
         try:
             data = engine.station.new_run(sid, time.time())
+            engine.photos.clear(sid)
         except StationError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         hub.broadcast({"type": "part", "sensor": sid, "part": None, "station": data}, kinds=(COCKPIT, PHONE))
@@ -263,6 +265,41 @@ def create_app(settings: Settings | None = None,
             return report.build(engine, event_id)
         except report.ReportError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # -- camera pictures and part passports ----------------------------------------
+
+    @app.post("/api/parts/{sensor}/{number}/photo", dependencies=[Depends(require_token)])
+    async def part_photo(sensor: str, number: int, request: Request) -> dict[str, Any]:
+        """The cockpit's camera picture of a part while it rests under the sensor (a JPEG body)."""
+        sid = sensor_or_400(sensor)
+        try:
+            url = engine.photos.save(sid, number, await request.body())
+        except PhotoError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "url": url}
+
+    @app.get("/photos/{sensor}/{number}.jpg", include_in_schema=False)
+    def photo_file(sensor: str, number: int) -> FileResponse:
+        try:
+            path = engine.photos.path(sensor, number)
+        except PhotoError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="no picture of this part")
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/part/{sensor}/{number}", include_in_schema=False)
+    def passport_page(sensor: str, number: int, embed: bool = False) -> HTMLResponse:
+        page = report.render_passport_html(engine, sensor_or_400(sensor), number, embed=embed)
+        if page is None:
+            return HTMLResponse(f"<h1>Part {number}</h1><p>This part is not in the part log (yet). A part is "
+                                "logged when it leaves the sensor.</p>", status_code=404)
+        return HTMLResponse(page)
+
+    @app.get("/run-report/{sensor}", include_in_schema=False)
+    def run_report_page(sensor: str, embed: bool = False) -> HTMLResponse:
+        """Every part and every alert of the current run of the quality station, one page."""
+        return HTMLResponse(report.render_run_html(engine, sensor_or_400(sensor), embed=embed))
 
     @app.get("/report/{event_id}", include_in_schema=False)
     def report_page(event_id: str, embed: bool = False) -> HTMLResponse:
