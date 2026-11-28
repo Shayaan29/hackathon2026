@@ -11,7 +11,13 @@ sys.path.insert(0, str(BACKEND))
 from app.buffer import SensorBuffer  # noqa: E402
 from app.config import Settings, load_settings  # noqa: E402
 from app.detection import Detector, Event  # noqa: E402
-from app.sources import SimulatedSensor  # noqa: E402
+from app.sources import register_source  # noqa: E402
+
+from simulated_sensor import SimulatedSensor  # noqa: E402
+
+# the cockpit reads real sensors only; the tests feed it simulated data through this source type
+register_source("simulator", SimulatedSensor)
+TESTS = Path(__file__).resolve().parent
 
 T0 = 1_700_000_000.0
 
@@ -20,11 +26,8 @@ T0 = 1_700_000_000.0
 def settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("COCKPIT_TOKEN", "test-token")
-    monkeypatch.setenv("SOURCE_OVERRIDE", "")
     monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path / "knowledge"))
-    monkeypatch.setenv("OPENAI_TEXT_MODEL", "")
-    monkeypatch.setenv("RECOMMEND_PREFETCH", "1")
-    return load_settings(BACKEND / "config" / "sensors.yaml")
+    return load_settings(TESTS / "sensors.yaml")
 
 
 class Rig:

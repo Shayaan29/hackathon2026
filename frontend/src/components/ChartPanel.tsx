@@ -2,16 +2,11 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { controller } from "../controller";
 import { loadView } from "../lib/api";
 import {
-  barOption, boxplotOption, driftOption, echarts, histogramOption, historyOption, incidentOption, scatterOption,
-  spectrumOption, withAnnotations, type ChartOption,
+  boxplotOption, echarts, histogramOption, historyOption, partCountsOption, partsOption, withAnnotations, type ChartOption,
 } from "../lib/charts";
-import { ago, signed } from "../lib/format";
 import { posUnit, shownOf } from "../lib/units";
 import { useStore, type StagePanel } from "../state/store";
-import type {
-  BarData, BoxplotData, DriftData, HistogramData, HistoryData, IncidentChartData, ScatterData, SpectrumData, ViewData,
-} from "../types";
-import { ShiftChart } from "./ShiftChart";
+import type { BoxplotData, HistogramData, HistoryData, PartCountsData, PartsData, ViewData } from "../types";
 
 const OPACITY = [1, 0.5, 0.26, 0.12, 0.05];
 
@@ -30,27 +25,51 @@ function placement(depth: number, entered: boolean, leaving?: StagePanel["leavin
 
 function buildOption(data: ViewData): ChartOption {
   switch (data.view) {
-    case "spectrum": return spectrumOption(data);
-    case "drift": return driftOption(data);
-    case "histogram": return histogramOption(data);
+    case "histogram":
+    case "part_heights": return histogramOption(data);
     case "boxplot": return boxplotOption(data);
-    case "scatter": return scatterOption(data);
-    case "bar": return barOption(data);
-    case "shift": return {};
-    case "incident": return incidentOption(data as IncidentChartData);
+    case "parts": return partsOption(data);
+    case "part_counts": return partCountsOption(data);
     default: return historyOption(data as HistoryData);
   }
 }
 
-const GROUP_WORDS: Record<string, string> = { minute: "per minute", "10min": "per 10 minutes", hour: "per hour", sensor: "per sensor" };
+const GROUP_WORDS: Record<string, string> = { minute: "per minute", "10min": "per 10 minutes", hour: "per hour" };
 
 function windowText(seconds: number): string {
   if (seconds >= 5400) return `Last ${Math.round(seconds / 3600)} hours`;
   return seconds >= 120 ? `Last ${Math.round(seconds / 60)} minutes` : `Last ${Math.round(seconds)} seconds`;
 }
 
+function runText(windowS: number | null | undefined): string {
+  return windowS ? windowText(windowS) : "This run";
+}
+
 function describe(data: ViewData | null, fallbackTitle: string): { title: string; detail: string; tone?: "warn" | "bad" } {
-  if (!data) return { title: fallbackTitle === "shift" ? "The whole shift" : fallbackTitle, detail: "loading…" };
+  if (!data) return { title: fallbackTitle, detail: "loading…" };
+  if (data.view === "parts") {
+    const d = data as PartsData;
+    const c = d.counts;
+    if (!c.parts) return { title: `${d.name}: height of every part`, detail: "no parts yet" };
+    const share = Math.round((100 * c.good) / c.parts);
+    return { title: `${d.name}: height of every part`,
+      detail: `${runText(d.window_s)}, ${c.parts} parts, ${share}% the taught part`, tone: c.different ? "warn" : undefined };
+  }
+  if (data.view === "part_counts") {
+    const d = data as PartCountsData;
+    const good = d.good.reduce((a, b) => a + b, 0);
+    const different = d.different.reduce((a, b) => a + b, 0);
+    return { title: `${d.name}: parts ${GROUP_WORDS[d.group_by] ?? ""}`,
+      detail: `${runText(d.window_s)}, ${good} good, ${different} different`, tone: different ? "warn" : undefined };
+  }
+  if (data.view === "part_heights") {
+    const d = data as HistogramData;
+    const s = d.series[0];
+    if (!s) return { title: "How the part heights are spread", detail: "not enough parts" };
+    return { title: `${s.name}: how the part heights are spread`,
+      detail: `${runText(d.window_s)}, ${s.n} parts${s.capability ? `, Cpk ${s.cpk.toFixed(1)}` : ""}`,
+      tone: s.outside > 0 ? "warn" : undefined };
+  }
   if (data.view === "histogram") {
     const d = data as HistogramData;
     const s = d.series[0];
@@ -66,52 +85,10 @@ function describe(data: ViewData | null, fallbackTitle: string): { title: string
   }
   if (data.view === "boxplot") {
     const d = data as BoxplotData;
-    return { title: d.group_by === "sensor" ? "Spread per sensor" : `Spread ${GROUP_WORDS[d.group_by] ?? ""}`,
+    return { title: `Spread ${GROUP_WORDS[d.group_by] ?? ""}`,
       detail: `${windowText(d.window_s)}, from ${d.per}` };
   }
-  if (data.view === "scatter") {
-    const d = data as ScatterData;
-    return { title: `${d.x.name} against ${d.y.name}`, detail: `${windowText(d.window_s)}, correlation ${d.r.toFixed(2)}`,
-      tone: Math.abs(d.r) >= 0.6 ? "warn" : undefined };
-  }
-  if (data.view === "bar") {
-    const d = data as BarData;
-    return { title: `${d.label.charAt(0).toUpperCase()}${d.label.slice(1)} per sensor`, detail: windowText(d.window_s) };
-  }
-  if (data.view === "incident") {
-    const d = data as IncidentChartData;
-    const name = d.series.find((s) => s.sensor === d.sensor)?.name ?? d.sensor;
-    return {
-      title: d.title,
-      detail: `${d.t_text} on ${name}`,
-      tone: d.severity === "critical" ? "bad" : d.severity === "warning" ? "warn" : undefined,
-    };
-  }
-  if (data.view === "shift") return { title: `${data.name}: the whole shift`, detail: "" };
-  if (data.view === "spectrum") {
-    const d = data as SpectrumData;
-    const when = d.event ? `vibration ${ago(d.event.t)}` : "live window";
-    const peak = d.peak && d.peak.prominence >= 6
-      ? `clear peak at ${d.peak.frequency_hz.toFixed(0)} Hz`
-      : "no dominant frequency";
-    return { title: `${d.name}: frequency spectrum`, detail: `${peak}, ${when}`, tone: d.peak && d.peak.prominence >= 6 ? "warn" : undefined };
-  }
-  if (data.view === "drift") {
-    const d = data as DriftData;
-    if (!d.fit || Math.abs(d.fit.rate_per_min) < 1) return { title: `${d.name}: drift and forecast`, detail: "No steady drift" };
-    const minutes = d.forecast?.minutes_to_limit;
-    const limit = d.limit_word === "measuring range" ? "leaves the measuring range" : "tolerance limit";
-    const eta = minutes !== null && minutes !== undefined ? `, ${limit} in about ${Math.round(minutes)} min` : "";
-    return {
-      title: `${d.name}: drift and forecast`,
-      detail: `${signed(d.fit.rate_per_min, 1)} ${d.unit}/min${eta}`,
-      tone: minutes !== null && minutes !== undefined && minutes < 10 ? "bad" : "warn",
-    };
-  }
   const h = data as HistoryData;
-  if (h.view === "compare") {
-    return { title: h.series.map((s) => s.name).join(" vs "), detail: `${windowText(h.window_s)}, same time axis` };
-  }
   const s = h.series[0];
   const last = [...(s?.values ?? [])].reverse().find((v) => v !== null);
   const shown = shownOf(s?.unit ?? "", s?.display, s?.limit_word);
@@ -130,9 +107,7 @@ export function ChartPanel({ panel, depth, register }: {
   const [data, setData] = useState<ViewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [entered, setEntered] = useState(false);
-  const [shiftDetail, setShiftDetail] = useState<{ text: string; tone?: "warn" }>({ text: "loading…" });
   const mission = useStore((s) => s.mission);
-  const isShift = panel.spec.view === "shift";
   const touring = Boolean(panel.tour);
 
   useEffect(() => {
@@ -163,10 +138,8 @@ export function ChartPanel({ panel, depth, register }: {
     let cancelled = false;
     let timer = 0;
     const view = panel.spec.view;
-    if (view === "shift") return undefined;
-    // live views refresh; charts the copilot built are snapshots; tours hold the picture still
-    const live = view === "timeseries" || view === "compare";
-    const refreshMs = touring ? 0 : view === "drift" ? 4000 : live ? 1000 : 0;
+    // the live signal refreshes; charts the copilot built are snapshots; tours hold the picture still
+    const refreshMs = touring ? 0 : view === "timeseries" ? 1000 : 0;
     const load = async () => {
       try {
         const result = await loadView(panel.spec);
@@ -200,10 +173,7 @@ export function ChartPanel({ panel, depth, register }: {
     }
   }, [data, mission, panel.tour]);
 
-  const info = isShift
-    ? { title: `${controller.sensorName(panel.spec.sensors[0] ?? "s1")}: the whole shift`, detail: shiftDetail.text,
-        tone: shiftDetail.tone }
-    : describe(data, panel.spec.view);
+  const info = describe(data, panel.spec.view);
   const tourText = panel.tour && panel.tour.shown > 0 ? `Step ${panel.tour.shown} of ${panel.tour.steps.length}` : null;
 
   return (
@@ -217,10 +187,7 @@ export function ChartPanel({ panel, depth, register }: {
         <div className="panel-title">{info.title}</div>
         <div className={`panel-detail ${info.tone ?? ""}`}>{error ? `error: ${error}` : tourText ?? info.detail}</div>
       </header>
-      {isShift
-        ? <ShiftChart panel={panel} front={depth === 0 && !panel.leaving}
-                      onDetail={(text, tone) => setShiftDetail({ text, tone })} />
-        : <div className="panel-chart" ref={chartRef} />}
+      <div className="panel-chart" ref={chartRef} />
     </div>
   );
 }

@@ -28,6 +28,11 @@ class RingBuffer:
     def available(self) -> int:
         return min(self._written, self._cap)
 
+    @property
+    def written(self) -> int:
+        """Values added since the start (the buffer keeps the newest of them)."""
+        return self._written
+
     def extend(self, values: np.ndarray) -> None:
         values = np.asarray(values, dtype=float)
         n = values.size
@@ -77,6 +82,11 @@ class SensorBuffer:
     @property
     def fast_seconds_available(self) -> float:
         return self.fast.available / self.rate_hz
+
+    @property
+    def written(self) -> int:
+        """Samples added since the start; the difference of two counts is the number of new samples."""
+        return self.fast.written
 
     def append(self, values: np.ndarray, t_end: float) -> None:
         """Add consecutive samples whose newest sample was taken at ``t_end``."""

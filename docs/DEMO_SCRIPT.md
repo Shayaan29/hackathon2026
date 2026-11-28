@@ -1,189 +1,103 @@
-# Pitch script (about 5 minutes)
+# Pitch script: 4 minutes and 1 minute of questions
 
-One person talks, one person drives the laptop. Rehearse it twice with the
-real projector and phones. Before you start: cockpit running, cloudflared
-running, the tunnel address saved under **Q**, demo panel closed, sound up,
-and **0** pressed in the demo panel so everything is back to normal. The day
-before, run `backend/.venv/bin/python scripts/chain_check.py`: it must end with
-"All steps passed." That proves section 6 will work on this laptop.
+One person talks, one person drives the laptop and puts the parts under the sensor. Everything you show is the real
+optoNCDT 5500 measuring real parts: there is no simulator and no recording behind it.
 
-The challenge is a user interface for sensor data, so the story is: the
-cockpit shows the right picture at the right moment, and explains it.
-Sections 8 and 10 are optional; drop them if you are short on time.
+The story: a laser sensor that measures to a micrometre becomes a quality station that anyone on the shop floor
+understands. It counts every part, flags the wrong one the moment it lands, and says what is going on.
 
-## 1. The problem (30 s, clean mode)
+## Before you go on stage (10 minutes earlier)
 
-"Micro-Epsilon sensors measure to a micrometre. But a screen full of curves
-does not tell you what is going on. Our cockpit picks the right picture for
-the question, points at what matters, and says it out loud."
+1. Sensor warm (30 minutes on), cockpit running, browser on `http://localhost:8000` in full screen (F11).
+2. The tile says "Live sensor 20 kHz" and the reading is the empty plate (about 8 mm).
+3. **Part check**: plate empty, **Teach the empty plate**; one good part under the laser, **Teach this part**. Take the
+   part away: the tile says "Nothing under the sensor" and nothing is flagged.
+4. Click the part counter in the tile, then **New run** and **Clear the part log**: the counter starts at 0 on stage.
+5. Phones: `cloudflared tunnel --url http://localhost:8000` running, the address pasted under **Q** once.
+6. Sound up. Five good parts and two different ones (a taller and a lower one) on the table, within reach.
+7. Do not leave a part under the sensor while you wait: after a few parts the station knows the rhythm and a part that
+   lies there for a long time is a "possible jam". Before the first part it says nothing.
 
-Show the cockpit: the twin of the measuring setup, the part turning under the
-two lasers, each laser painting its track green. "Every reading is painted
-where it was taken on the part. Green means in tolerance."
+## 0:00 The problem (30 s)
 
-## 2. Bring the jury in (30 s)
+"Micro-Epsilon sensors measure to a micrometre. But on the shop floor nobody wants curves. They want to know: is this
+the right part, is the line running, is something about to go wrong. Our cockpit turns one laser sensor into a quality
+station that answers exactly that, and says it out loud."
 
-Press **Q** and show the code. "Please take out your phones and scan this.
-Type your name if you like." Wait until the top bar counts the phones, then
-press **Q** again to close it.
+Point at the tile: the reading in millimetres, the gauge with the measuring range from the data sheet.
 
-## 3. Lights out (15 s)
+## 0:30 Bring the jury in (20 s)
 
-Press **J**. Let the room watch the lights go down and the lasers start to
-glow. Say nothing for two seconds.
+Press **Q**. "Please scan this with your phones." Wait until the top bar counts a few phones, press **Q** again.
+"Your phones are now the shop floor's alarm."
 
-## 4. A judge knocks the machine (70 s)
+## 0:50 Lights out (10 s)
 
-"Dr. Weber, please shake your phone hard, three times." (Or ask them to tap
-"Knock instead".)
+Press **J**. The cockpit goes dark, the twin glows, the part counter sits on the right at 0. Say nothing for two
+seconds.
 
-What happens on its own:
-- the gantry shakes in 3D and every phone in the room flashes
-- the copilot names the judge and says it measured a 30 Hz vibration on both
-  sensors at the same moment
-- the spectrum flies in with the 30 Hz peak pinned
+## 1:00 The line runs (60 s)
 
-Then hold Space: "Do the sensors move together?" A scatter plot flies in: a
-round cloud and one bright streak. Hold Space: "Explain this chart." While the
-copilot talks, the chart points along: first the cloud ("apart from the knock
-the sensors move independently, that is just noise"), then the streak ("during
-the knock they moved together, correlation 0.97: one push moved both, so it
-came through the fixture, not from one sensor").
+Put good parts under the laser one after the other: put one down, count to two, take it away, the next one.
 
-Point out: "Nothing here is scripted. The shake knocked the simulated fixture,
-the same detection that watches the real sensors found it, and every number
-in that explanation was computed from the data."
+- "We taught it one good part and the empty plate. That is all the setup there is."
+- Each part shows up green in the 3D model, and the counter goes up the moment the part leaves.
+- "Every part gets a number and its height, measured to a micrometre: this one is 6.002 millimetres."
+  (The last part is written under the counter.)
 
-## 5. Where on the part (40 s)
+## 2:00 The wrong part (40 s)
 
-Press **D**, **7** (a dent in the part under sensor 1), close with **D**.
-Within a few seconds the dent comes round: a red patch appears on sensor 1's
-track, the copilot reports out of tolerance and the live signal flies in with
-the spike over the limit.
+Put a different part under the laser.
 
-Say "dismiss" (or press **Delete**) so the chart turns to dust. "The chart
-tells you when. The twin shows you where: the red patch comes round on every
-turn, so this is the part, not the sensor." Press **D**, **0** to take the dent
-away.
+- Within half a second the part in the twin turns red, the alert appears, every phone in the room flashes and
+  Epsilon says "Different part detected", with how much higher or lower it is than the taught part.
+- "No threshold to type, no program to write: it knows the good part, so everything else is flagged."
 
-## 6. The anomaly chain (90 s)
+Take it away and put a good part back: green again.
 
-Before this section, load the demo recording: **Load file**, choose
-`backend/data/demo_recording.csv`, type `8.6` as the part speed, click
-**Analyse the recording**, then **Show the incidents**. It takes about 15
-seconds, so say the next line while it runs.
+## 2:40 Ask it (40 s)
 
-"One abnormal measurement, followed through the whole cockpit."
+Hold **Space** (or type):
 
-1. Click **INC-002**, the drift on sensor 2. "The measurement graph highlights
-   the anomaly: the shaded part is the window where the drift was seen, and the
-   marker is where the alert fires."
-2. Point at the twin, at the label "INC-002 measured here". "The 3D component
-   shows where on the part this measurement was taken."
-3. Click **Explain**. "Epsilon explains why the anomaly was flagged, one step at
-   a time: the drift rate, the straight-line fit, the time to the limit. Each
-   marker appears as it is spoken."
-4. Point at **Recommended next steps**. "The AI recommends what to check, in order.
-   Under each step you see the measurements it rests on, and the sentence from the
-   sensor manual with its page. Click the page: the manual opens there." Then point
-   at the line below: "Drafts that fail our checks are left out and counted. A number
-   that is not in the data, or a quote that is not in the manual, never reaches you."
-   If the AI is off, the section says so and the fixed checks stay: "Rule based
-   checks" are always there.
-5. Ask by voice: "Epsilon, how do I mount this sensor?" The manual passages appear
-   on screen and Epsilon names the page. (Needs the manuals in `backend/data/knowledge`.)
-6. Click **Open report**. "A complete incident report, from the same numbers.
-   Every number on the screen was computed from the file."
+- "How many parts so far?" Epsilon gives the count, how many were good and the yield.
+- "Show me the height of every part." The chart flies in: a green band for the taught part, a dot per part, the red
+  dot for the foreign one.
+- "Explain this chart." Epsilon walks through it and the chart points at each finding while it speaks.
 
-Then **Load file**, **Back to the simulator**, and carry on.
+"Every number it says comes from the measurement. The language model only phrases it."
 
-## 7. The whole shift (50 s)
+## 3:20 The report (25 s)
 
-Hold Space: "What happened today?" Eight hours on one timeline, every alert
-marked. "Walk me through it." The copilot flies to each incident in turn: an
-earlier knock, zoomed down to every single reading, 2 ms apart; the
-noisy stretch; the moment the signal was lost; then back to the last ten
-minutes.
+Say "write a report" (or press **R**). The report opens: what happened, the heights of the last parts, likely causes,
+next steps with the page of the manual. "Scan the code and it is on your phone. And the part log goes to Excel with
+one click."
 
-"From eight hours to two milliseconds in one motion, and no spike gets lost
-on the way: the band around the line always keeps the highest and lowest
-reading."
+## 3:45 Close (15 s)
 
-## 8. Prediction (40 s, optional)
+"One sensor, one good part taught, and the line is watched: every part counted and measured, the wrong one caught at
+once, a jam, a double feed or a creeping height trend reported before it costs scrap. And with Micro-Epsilon's
+MEDAQLib, any of their sensors plugs in the same way. Thank you."
 
-Press **D**, **2** (drift on sensor 2), close with **D**. After about ten
-seconds the copilot warns: drift of about 6 µm per minute, tolerance limit in
-about 7 minutes. The forecast chart shows the dashed line hitting the limit.
-"The copilot sees the problem before it produces a single bad part." Press
-**D**, **3** to stop the drift.
+## Questions you may get
 
-## 9. The report (30 s)
+| Question | Answer |
+| --- | --- |
+| Two different parts with the same height? | The sensor sees the height of the top surface only, so it cannot tell them apart, and we say so. A second sensor, or a profile scanner, would see the shape. |
+| How does it know a part is there? | It cuts the 20 kHz signal into 50 ms frames. Half a second of something that is not the empty plate is a part; the plate showing for 0.15 s ends it. |
+| How fast is the alert? | About half a second: the part must rest that long so a part that is still sliding in is not flagged. |
+| Does the AI make numbers up? | No. Counts, heights and limits come from tool calls on the data. The model only phrases them, and the chart explanations are computed, not generated. |
+| What is the trend warning? | A straight line through the heights of the last good parts. When it is clear and points to the edge of the band, it says in how many parts the parts will leave it. A worn tool or a fixture that moves does this. |
+| More sensors? | Each sensor is a few lines in the sensor file; the cockpit, the twin and the alerts take any number. MEDAQLib finds Micro-Epsilon sensors on Ethernet and USB by itself. |
+| What if the sensor fails? | The tile says what the sensor reports, for example no target or outside the measuring range, with the page of the manual, and the cockpit reconnects by itself. |
 
-Hold Space: "Write a report." The incident report opens with likely causes,
-next steps and the signal around the alert. "Scan the code on the right and
-the report is on your phone, as a PDF if you like."
-
-## 10. It fixes things too (50 s, optional)
-
-Press **D**, **6**, then **J** to leave mission mode. "Someone left sensor 1 on
-the wrong settings." Hold Space: "Is sensor 1 set up well?"
-
-The setup check opens: noise far above what the tolerance allows, the
-proposal (averaging 64, measuring rate 4000 Hz so 30 Hz stays visible) and the
-preview on the real last two seconds of signal. Say "yes" or click Apply. The
-noise drops about five times, measured live.
-
-## 11. Close (15 s)
-
-"Everything you saw runs on Micro-Epsilon data: replace one YAML file with the
-real sensors, or plug an optoNCDT 5500 into the laptop with an Ethernet cable,
-and the cockpit watches the real line. The charts, the explanations and the
-timeline come from the data, so they work the same on day one."
-
-## With the real sensor (ILD5500-10)
-
-With `SENSORS_FILE=config/sensors.live.yaml` the cockpit speaks the sensor's own language. Readings are the distance
-DIST1 in millimetres from the start of the measuring range, so a target in the middle reads about 5.00 mm. The limits
-are the measuring range of the data sheet, 0 to 10 mm, with the extended range of -2.5 to 12.5 mm around it. The top bar
-says "Target in measuring range", and the gauge in the sensor tile shows where the target is, with a line under the
-reading that says "in the measuring range", "closer than the range (extended)", "beyond the range (extended)" or
-"outside the extended range". These are the three states of the sensor's own LED: green, flashing green and red.
-
-- Slide the target slowly towards the sensor or away from it until it passes 10 mm (or 0 mm). The alert says "Out of
-  measuring range", where the target is and that the sensor still measures in its extended range, but that the data
-  sheet accuracy only holds inside 0 to 10 mm. Open the report: it names the manual page for the values it uses.
-- Tap the table or the fixture for a real vibration alert. The demo buttons and the phone shake do nothing here,
-  because there is no simulator behind them.
-- Open the setup check. It does not change anything in the sensor. It compares the noise with the linearity of the
-  data sheet (±1.5 µm) and tells what to check, with the manual page.
-- Hold Space and say "status": Epsilon says where the target is in millimetres and whether it is inside the
-  measuring range.
-- No sensor on the table: `python scripts/fake_ild5500.py --scenario extended --after 25` in `backend/` plays a target
-  that moves from 5 mm out to 11.5 mm after 25 seconds, so it leaves the range but stays in the extended range.
-
-## Part check (optional, 60 s, real sensor or fake)
-
-1. Put one of the small parts under the sensor, hold it still, press **Part check** in the sensor tile, then
-   **Teach this part**. The tile says "Taught part".
-2. Take the part away and put another thing under the sensor: after half a second Epsilon says "Different part
-   detected", with the height and how far it is from the taught part.
-3. Put the good part back: the tile says "Taught part" again. Put a different thing under it again: a new alert.
-4. Say it out loud: the sensor sees the height of the top surface only. A part of the same height looks the same.
-5. No sensor: `python scripts/fake_ild5500.py --scenario parts --after 40` in `backend/`.
-
-## If something fails
+## If something fails on stage
 
 | Problem | Do this |
 | --- | --- |
-| AI voice does not connect | Keep going: typed commands and the browser voice run the same script, including "explain this chart". |
-| Phones cannot join | Use the hotspot of a phone for the laptop, restart cloudflared, show the new code. |
-| Nobody wants to shake | Press **D**, **1** for the same knock. |
-| A chart hides the part | Say "dismiss" or press **Delete**. |
-| The recommendations say "Rule based checks are shown" | The note under the heading says why: no key, no credit, or the model refused. Click **Try the AI again**, or go on: the rule based checks are correct and always shown. |
-| The recording does not load on stage | Press **Escape**, skip section 6, and go on with section 7. Sections 7 onward use the simulator. |
-| The incident spot is missing on the part | The part speed was not typed. Type `8.6` in the sheet, then analyse again. |
-| The scatter has no bright streak | The knock is older than a minute: knock again, then ask. |
-| The 3D view is blank | Gestures and charts still work; the browser needs WebGL (use Chrome or Edge). |
-| The cockpit says "Out of measuring range" straight after the start | The target is outside 30 to 40 mm from the sensor (0 to 10 mm in the cockpit). Move the target into the range. The tile says which status code the sensor reports. |
-| The reading differs from the sensor's web page | The cockpit counts from the start of the measuring range. If the sensor was mastered or zeroed, its numbers are shifted by that offset: clear the mastering in the web page, or set `reference_mm` in `sensors.live.yaml`. |
-| The live sensor says "sensor not connected" | Check the cable and that nothing else reads the sensor, then restart the cockpit. If it still does not answer, take the `SENSORS_FILE` line out of `backend\.env` and restart: the cockpit is back on the simulated demo sensors and every section above works. |
+| The AI voice does not connect | Type the questions in the box: the same commands work offline, Epsilon answers with the browser voice. |
+| Phones cannot join | Go on without them; the alert still shows on the big screen. |
+| Taking a part away raises "Different part" | The empty plate was not taught (or the plate moved): **Part check**, **Teach the empty plate**. |
+| The counter does not count | Both the empty plate and the good part must be taught. |
+| A "possible jam" pops up while you talk | "It noticed that a part has been lying there far longer than the parts before. On a line that is a jam." Take the part away. |
+| The tile says "sensor not connected" | Check the Ethernet cable. The cockpit reconnects by itself within seconds. |
+| The 3D view is blank | Leave mission mode with **J**: the tile, the counter and the charts still work. |

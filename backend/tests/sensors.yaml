@@ -1,0 +1,52 @@
+# Sensor file for the automatic tests: two simulated sensors with a part tolerance in micrometres.
+# The cockpit itself reads config/sensors.live.yaml and never shows simulated data.
+
+cockpit:
+  title: "KI Sensor Cockpit"
+  team: "Team Name"
+  assistant_name: "Epsilon"
+  language: "en"
+
+engine:
+  analysis_rate_hz: 500
+  fast_buffer_s: 600
+  slow_buffer_s: 28800
+  backfill_s: 900                   # history the simulated sensors create at start
+
+sensors:
+  - id: s1
+    name: "Sensor 1"
+    model: "optoNCDT 1900 (test)"
+    unit: "µm"
+    nominal: 0.0
+    tolerance: { low: -40.0, high: 40.0 }
+    source:
+      type: simulator
+      noise: 0.8
+      hum_hz: 12.5
+      hum_amplitude: 0.15
+      seed: 11
+
+  - id: s2
+    name: "Sensor 2"
+    model: "optoNCDT 1900 (test)"
+    unit: "µm"
+    nominal: 0.0
+    tolerance: { low: -40.0, high: 40.0 }
+    source:
+      type: simulator
+      noise: 0.6
+      hum_hz: 12.5
+      hum_amplitude: 0.12
+      seed: 23
+
+detection:
+  eval_interval_s: 0.25
+  baseline_s: 20
+  invalid_window_s: 1.0
+  invalid_min_share: 0.2
+  out_of_range_window_s: 0.5
+  rearm_s: 3.0
+  cooldown_s:
+    out_of_range: 30
+    invalid: 20

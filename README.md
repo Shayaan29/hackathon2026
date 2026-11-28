@@ -1,471 +1,193 @@
 # KI Sensor Cockpit
 
-A voice copilot for Micro-Epsilon sensors. It watches the live data in a 3D
-digital twin of the measuring setup, speaks up when something is off, picks
-the chart that answers your question and walks you through it, zooms from the
-whole shift down to single readings, writes the incident report, fixes badly
-set up sensors, and lets the jury knock the machine from their own phones.
+A quality station and voice copilot for Micro-Epsilon sensors, built by team Mega Mind for the KI Sensor Cockpit
+challenge at Hochschule Landshut. An optoNCDT 5500 laser sensor looks at a part on a plate. The cockpit learns one
+good part, then counts and measures every part that comes under the sensor, flags every other part the moment it
+lands, warns of a jam, a double feed or a height trend, and explains it all in plain words, on the screen, by voice
+and on the phones of everyone in the room.
 
 ![Cockpit](docs/screenshot-cockpit.png)
 
 ![Mission mode](docs/screenshot-mission.png)
 
-![A chart the copilot picked and explained](docs/screenshot-charts.png)
+![The quality station: every part, its height and verdict](docs/screenshot-charts.png)
 
 ## What it does
 
-| Feature | What the jury sees |
+| Feature | What you see |
 | --- | --- |
-| Digital twin | A live 3D model of the measuring setup. The laser beams draw the real triangulation geometry, move with the readings and turn amber or red with the sensor state. Alerts shake the gantry. |
-| Voice copilot | Ask in English or German. It answers with measured numbers only, shows charts and speaks up on its own when an alert comes in. |
-| Charts the AI picks | Ask a question and the copilot builds the chart that answers it: "how are the readings spread?" gives a histogram with Cp and Cpk, "which hour was calmest?" a box plot per hour, "do the sensors move together?" a scatter plot, "compare the noise" a bar chart. |
-| Charts that point while it talks | Say "explain this chart". The copilot walks through it step by step, and the part it is talking about lights up with a numbered marker at the moment it says it. |
-| The whole shift, down to single readings | "Show me the whole shift": eight hours on one timeline, with every alert marked. Scroll to zoom in, or let the tour fly to each incident, down to every single reading of a knock. |
-| The laser paints the part | In the twin, the part turns under the sensors and each laser paints its track: green in tolerance, amber close to the limit, red outside it. A dent on the part shows up as a red patch that comes round on every turn. |
-| Mission mode (**J**) | The lights go out: the same cockpit full screen and dark, glowing lasers, a HUD with dials, and charts that fly in by themselves after each alert. Made for the projector. |
-| Judges shake their phone | A judge shakes their phone (or taps Knock). The cockpit knocks the fixture, the real detection finds the vibration on every sensor of that fixture, and the copilot greets the judge by name. |
-| Incident report | One click or "write a report": likely causes, next steps, charts around the alert, a setup check and ticket text. Save as PDF, or scan the code to take it on a phone. |
-| Load a recording | **Load file** in the top bar takes a CSV export from the measuring software. The whole file is checked with the same rules as the live sensors, with no code. The sheet says how it read the file and asks only for what it could not know. |
-| Anomaly chain | Pick an incident in the list. The chart highlights it, the twin marks where on the part it was measured, Epsilon explains why it was flagged, the checks to carry out are listed, and the report and CSV are one click away. |
-| Setup assistant | Reads a sensor's signal and proposes better settings (averaging, measuring rate) with the physics behind it, previews the result on the real last two seconds of data, applies it after a yes and then measures the improvement. |
-
-Everything runs on dummy data out of the box. To go live you replace data,
-not code: sensor names and tolerances in one YAML file, the API key in `.env`,
-and either a CSV export loaded in the top bar or a Micro-Epsilon optoNCDT 5500
-connected by Ethernet cable (see "Real data, option C").
-
-The eight hours of earlier incidents on the shift timeline are made up by the
-simulator so the demo has a past. With a recording or a live sensor nothing is
-made up: the timeline starts when the cockpit starts.
-
-**For the team:** [docs/TEAM_WALKTHROUGH.md](docs/TEAM_WALKTHROUGH.md) takes
-every member through the anomaly chain step by step, then through the rest of
-the cockpit, and lists what to check with the real files on Friday.
-
----
+| Live sensor | The optoNCDT 5500 over Ethernet at 20 kHz, in millimetres from the start of its measuring range, the same numbers as on the sensor's web page. Limits, extended range and status codes come from the data sheet, with the page. |
+| Digital twin | A 3D model of the setup: the sensor, the plate and the part under the laser, green for the taught part and red for a different one, with the measuring range drawn as a band. |
+| Part check | Teach the empty plate and one good part. Anything else that stays under the sensor raises **Different part detected**, with its height and how far it is from the taught part. |
+| Quality station | Every part gets a number, its height above the plate, how long it stayed and its verdict. Live counter, yield and parts per minute; the part log downloads for Excel. From the rhythm of the parts it warns of a **possible jam** and a **possible double feed**; from the heights of the good parts it warns of a **height trend** before the parts leave the band. |
+| Charts on request | "Show me a bar chart", "show the part heights", "show a histogram": the cockpit draws the chart and walks you through it, pointing at each finding while it speaks. |
+| Voice copilot | Epsilon (OpenAI Realtime) answers questions about the sensor and the parts. Every number comes from a tool call on the real data; without a key the browser voice and typed commands still work. |
+| Reports | One click or "write a report": what happened, the heights of the last parts, likely causes, next steps, with the manual page. Save as PDF or scan the code to take it on a phone. |
+| Manuals | Drop the Micro-Epsilon PDFs into the Manuals sheet; Epsilon answers from them and opens the page. |
+| Phones | The jury scans a code and their phones flash, beep and vibrate on every alert, and list the last parts. |
+| Mission mode | Press **J** for the pitch: the lights go out, the twin glows, the part counter sits next to it. |
+| Plug and play | `type: medaqlib` lets Micro-Epsilon's MEDAQLib find any supported sensor on Ethernet, USB or the serial ports. |
 
 ## Quick start (Windows)
 
 You need Python 3.11 or newer and Node.js 22.12 or newer (the LTS version from nodejs.org).
 
 1. Open PowerShell in the project folder.
-2. Run `.\scripts\setup.ps1`. It creates the Python environment, installs everything, builds the cockpit and creates `backend\.env` from the example.
-3. Open `backend\.env` and set `COCKPIT_TOKEN` (any password). Add `OPENAI_API_KEY` if you want the AI voice.
-4. Run `.\scripts\run.ps1`.
+2. Run `.\scripts\setup.ps1`. It creates the Python environment, installs everything, builds the cockpit and creates
+   `backend\.env` from the example.
+3. Open `backend\.env` and set `COCKPIT_TOKEN` (any password). Add `OPENAI_API_KEY` for the AI voice.
+4. Connect the sensor (next section), then run `.\scripts\run.ps1`.
 5. Open `http://localhost:8000/?token=<your COCKPIT_TOKEN>` in Chrome or Edge.
 
-If PowerShell says a script "is not digitally signed", Windows still marks the
-files as downloaded from the internet. Run `Get-ChildItem -Recurse | Unblock-File`
-once in the project folder. If scripts are disabled altogether, run
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once as well.
+After a `git pull`: `cd frontend`, `npm install`, `npm run build`, `cd ..`, `.\scripts\run.ps1`, then Ctrl+F5 in the
+browser.
 
-## Quick start (macOS or Linux)
+If PowerShell says a script "is not digitally signed", run `Get-ChildItem -Recurse | Unblock-File` once in the
+project folder. If scripts are disabled altogether, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
 
-1. `./scripts/setup.sh`
-2. Edit `backend/.env` as above.
-3. `./scripts/run.sh`
-4. Open `http://localhost:8000/?token=<your COCKPIT_TOKEN>`.
+On macOS or Linux: `./scripts/setup.sh`, edit `backend/.env`, `./scripts/run.sh`.
 
-## Developing with hot reload
+## Connect the optoNCDT 5500 (ILD5500) over Ethernet
 
-Run the backend and the Vite dev server side by side:
-
-```powershell
-# terminal 1 (on macOS/Linux: .venv/bin/python -m app)
-cd backend
-.\.venv\Scripts\python.exe -m app
-
-# terminal 2
-cd frontend
-npm run dev
-```
-
-Then open `http://localhost:5173/?token=<your COCKPIT_TOKEN>`. Changes to the
-frontend appear instantly; restart the backend after Python changes.
-
----
-
-## What to replace
-
-| What | Where | Notes |
-| --- | --- | --- |
-| Team name, copilot name, start language | `backend/config/sensors.yaml` → `cockpit` | `language: de` makes the copilot start in German |
-| Sensors: names, models, tolerances | `backend/config/sensors.yaml` → `sensors` | Every line marked `REPLACE` |
-| How fast the measured part turns | `sensors.yaml` → `engine.part_rpm` | Sets where the twin paints each reading on the part; `0` if the part does not turn |
-| Settings the copilot may change | `sensors.yaml` → `settings` per sensor | Dummy values; replace with the real parameters and ranges |
-| Alert thresholds | `sensors.yaml` → `detection` | Tune at the event with real table taps |
-| AI voice key and model | `backend/.env` | `gpt-realtime-mini` while building, the full model for the demo |
-| Cockpit password | `backend/.env` → `COCKPIT_TOKEN` | Protects voice keys, demo controls and setting changes |
-| Real data | **Load file** in the top bar, `sensors.yaml` → `source`, or `SENSORS_FILE=config/sensors.live.yaml` in `.env` for the live optoNCDT 5500 | See the options below |
-
-### Real data, the quick way: analyse a whole file (no code)
-
-1. Record a few minutes with Micro-Epsilon **sensorTOOL** and export CSV.
-2. Put the file in `backend/data/`. The cockpit reads its own copy, so the original stays unchanged.
-3. Click **Load file** in the top bar, choose the file, and read "2. Check how the file was read".
-4. Type the part speed in rpm (0 if unknown), and the sample rate if the file has no time column.
-5. Type the tolerance limits in µm for each sensor, and untick the columns that are not sensors.
-6. Click **Analyse the recording**, then **Show the incidents**.
-
-The same steps run from the command line, with one PASS or FAIL per step:
-`backend/.venv/bin/python scripts/chain_check.py data/my_file.csv --rpm 8.6`
-(add `--rate 1000` for a file without a time column).
-
-### Recommendations from the manuals (needs the OpenAI key)
-
-Each incident gets **Recommended next steps**: what to check, in order, with the evidence next to it.
-
-1. Put the key into `backend/.env` (`OPENAI_API_KEY=...`).
-2. Download the manuals of your sensors (micro-epsilon.com, product page, Downloads) into `backend/data/knowledge/`,
-   or add them in the cockpit under **Manuals**. PDFs stay out of git.
-3. Run `backend/.venv/bin/python scripts/rag_check.py` once. It prints PASS, WARN or FAIL for the key, the manuals,
-   the search and a real recommendation, and shows which quote came from which page.
-
-How a recommendation is made: the analysis writes down the measured facts of the incident (F1, F2, ...). The manual
-passages that match the kind of incident are found by keywords and, with a key, by meaning. A language model drafts
-a few recommendations that must cite facts and quote passages. Plain code then checks every draft: it cites a real
-fact, every number in it appears in the measured data or in its quote, every quote is word for word in the passage,
-and no cause is stated as certain. Drafts that fail are left out and counted on screen. If the AI is not available,
-the fixed checks from `config/playbook.yaml` are shown and the screen says why. Quotes link to the PDF page.
-
-By voice, ask Epsilon a question about the sensor ("how do I mount it?"): it looks it up in the manuals, shows the
-passages on screen and names the page.
-
-### Real data, option A: replay a file as a live sensor (YAML)
-
-1. Record a few minutes with Micro-Epsilon **sensorTOOL** and export CSV.
-2. Put the file in `backend/data/`.
-3. In `sensors.yaml`, switch the sensor's source:
-
-```yaml
-source:
-  type: replay
-  path: data/my_recording.csv
-  column: 1            # column index (0 = first) or the header name
-  file_rate_hz: 1000   # sample rate of the recording
-  scale: 1000.0        # mm -> µm, if the file is in mm
-  offset: 0.0          # reference subtracted after scaling
-  decimal: ","         # German number format; "." otherwise
-```
-
-German CSVs (`;` and decimal commas) work. Empty cells become invalid
-readings. To try it without a sensor: `python scripts/make_sample_recording.py`
-in `backend/` creates `data/sample_recording.csv` with a tap and a dropout.
-
-### Real data, option B: live sensor through MEDAQLib
-
-`backend/app/sources/medaqlib.py` is a template for other sensor types. Fill
-in `_connect()` and `_read_raw()` from the Python example that ships with
-MEDAQLib, then set `type: medaqlib` with `dll_path`, `sensor_type` and
-`ip_address`. Scaling, invalid readings and resampling are already handled.
-If this source fails to start, that sensor falls back to the simulator and the
-cockpit shows "fallback" in the top bar.
-
-### Real data, option C: the optoNCDT 5500 (ILD5500) live over Ethernet
-
-The cockpit reads the sensor directly over its Ethernet interface (manual
-chapter 9, "Server TCP/IP"). No driver and no extra software are needed. The
-sensor is never put on the internet: it talks to the laptop that runs the
-cockpit, and the browsers (and the judges' phones, through the tunnel) talk to
-the cockpit.
-
-```
- sensor ── Ethernet cable ── laptop (cockpit) ── browser, or phones through the tunnel
-```
+The cockpit reads the sensor directly over its Ethernet interface (manual chapter 9, "Server TCP/IP"). No driver is
+needed. The sensor talks only to the laptop; browsers and phones talk to the cockpit.
 
 1. Power the sensor with 12 to 30 V DC (24 V typical): red wire to +, blue wire to 0 V.
    If the sensor says "Laser is off", connect the black wire (pin 3) to the blue wire (0 V, pin 17).
 2. Plug an Ethernet cable from the sensor into the laptop.
 3. Give the laptop's Ethernet adapter a fixed address: IP `169.254.168.10`, subnet mask `255.255.0.0`.
-   (Windows: Settings, Network & Internet, Ethernet, IP assignment, Edit, Manual.)
    The sensor leaves the factory with the address `169.254.168.150`.
-4. Open `http://169.254.168.150` in the browser. This is the sensor's own web page. If the address was changed,
-   find it with Micro-Epsilon **sensorTOOL**.
-5. In the web page set the sensor to send its data:
-   - Settings, Outputs: under **Output interface** choose Ethernet and switch Analog output off (the factory
-     setting is analog).
+4. Open `http://169.254.168.150`, the sensor's own web page, and set it to send its data:
+   - Settings, Outputs: **Output interface** Ethernet, analog output off.
    - Ethernet settings: **Measurement value transmission** = Server TCP/IP, port `1024`.
-   - Ethernet data output: tick **DIST1** only, and leave VIDEO off.
-   - Save it as a parameter set so it survives a restart.
-   (The same can be typed into the search field of the web page:
-   `MEASTRANSFER SERVER/TCP 1024`, `OUTPUT ETHERNET`, `OUT_ETH DIST1`.)
-6. Close the sensor's web chart and sensorTOOL, so that only the cockpit reads the sensor. (The manual does not say
-   how many Ethernet connections the sensor serves at once, so keep it to one.)
-7. Let the sensor warm up for about 30 minutes, then check the connection from `backend`:
-   `.\.venv\Scripts\python.exe scripts\sensor_check.py`
-   It prints the article and serial number, readings per second, mean distance, noise and the share of invalid
-   readings, and says in plain words what to fix if something is wrong.
-8. In `backend\.env` set `SENSORS_FILE=config/sensors.live.yaml`. Only if the address or port differ from the
-   defaults, also set `LIVE_SENSOR_HOST=` and `LIVE_SENSOR_PORT=`. Then restart the cockpit.
-9. The top bar says "Target in measuring range (live data)" and the sensor tile says "Live sensor 20 kHz" with the address.
+   - Ethernet data output: tick **DIST1** only, VIDEO off. Save it as a parameter set.
+5. Close the sensor's web chart and sensorTOOL, so that only the cockpit reads the sensor.
+6. Let the sensor warm up for about 30 minutes, then check from `backend`:
+   `.\.venv\Scripts\python.exe scripts\sensor_check.py`. It says in plain words what to fix if something is wrong.
+7. In `backend\.env` set `SENSORS_FILE=config/sensors.live.yaml` (and `LIVE_SENSOR_HOST=` / `LIVE_SENSOR_PORT=` only
+   if the address or port differ). Restart the cockpit.
+8. The top bar says "Target in measuring range (live data)" and the tile says "Live sensor 20 kHz" with the address.
 
-In `config/sensors.live.yaml` replace the sensor name and model with the type on the sensor's label
-(ILD5500-10, -25, -50, -100 or -200). The model decides the rest: with `tolerance: measuring_range` the limits are
-the measuring range of that model from the operating instructions (0 to 10 mm for an ILD5500-10, extended range
-−2.5 to 12.5 mm), so no limit has to be typed in. To judge a part instead, give `tolerance` a band in µm from the
-start of the measuring range, for example `{ low: 4950.0, high: 5050.0 }`. The digital twin shows a 3D model of the
-sensor whenever the model name contains ILD5500 or optoNCDT 5500. The housing is the same for all five measuring
-ranges; the type plate shows which one it is.
+In `config/sensors.live.yaml` set the model from the sensor's label (ILD5500-10, -25, -50, -100 or -200). The model
+decides the limits: 0 to 10 mm for an ILD5500-10, with the extended range from −2.5 to 12.5 mm around it (data sheet
+p. 6). If the cable is pulled, the tile says so and the cockpit reconnects by itself. Every number on the screen comes
+from the sensor: there is no simulated data behind a live sensor.
 
-How it behaves:
+### Plug and play with MEDAQLib (optional)
 
-- The reading is the distance DIST1 as the sensor reports it: millimetres from the start of the measuring range
-  (0 mm = start, 10 mm = end for an ILD5500-10; operating instructions p. 62 and p. 66). Screens, alerts, reports and
-  the copilot speak in mm. Inside, the cockpit keeps µm, so noise and vibration of a few µm stay visible.
-  If you master or zero the sensor in its web page, the numbers shift by that offset. `reference_mm: auto` shows only
-  the change since the start instead, and a number sets a fixed zero.
-- The limits are the data sheet of the model: a target between 0 and 10 mm is in range, between −2.5 and 0 mm or
-  10 and 12.5 mm it is still measured but in the extended range (like the flashing green LED), and beyond that it is
-  outside, like the red LED. Every explanation, alert and report names the page of the manual it comes from.
-- The sensor measures up to 150 kHz. The cockpit averages that down to 500 values per second, in time with the
-  clock, so the alert rules behave as they do on the simulator.
-- If the cable is pulled or the sensor is off, the tile and the top bar say "sensor not connected". The cockpit keeps
-  trying and picks the data up again by itself. It never shows simulated data for a live sensor.
-- "Connected, but most readings are invalid" means the sensor sees no target, the part is outside the measuring
-  range, or the surface is too dark or too shiny. The tile shows the sensor's own status text.
-- The live file has no `settings`, so the setup assistant and the copilot do not push values into the sensor.
-  The setup check compares the measured noise with the linearity of the data sheet (±1.5 µm), looks at the share of
-  invalid readings and at where the target is, and says what to check, with the manual page. Averaging and measuring
-  rate are changed in the sensor's web page. The demo injection buttons only work with the simulator.
-- Cp and Cpk are not shown for a measuring range, because they describe a part tolerance. They appear again when
-  `tolerance` is a band in µm.
-- No sensor at hand: `python scripts/fake_ild5500.py --scenario vibration` in `backend/` plays a sensor on
-  `127.0.0.1:1024` whose target starts to shake after 10 seconds. The other scenarios are `quiet`, `drift`,
-  `extended` (the target leaves the 0 to 10 mm range and stays in the extended range), `no-target` and
-  `out-of-range`; `--help` lists the options. The fake sensor serves one client at a time. Set `LIVE_SENSOR_HOST=127.0.0.1` in `.env` to try the
-  whole chain.
+MEDAQLib is Micro-Epsilon's free driver library for Windows. With it the cockpit searches for a sensor on Ethernet,
+USB and the serial ports and opens the first one it finds; the tile shows the model, the interface, the address and
+the serial number. Install MEDAQLib, then replace the `source:` block in `config/sensors.live.yaml` with the
+commented MEDAQLib block in the same file (it names the 64-bit DLL, `sensor: auto` and an optional fixed address).
+It was written from the MEDAQLib manual and tested with a stand-in for the DLL, not yet with the real sensor: for the
+optoNCDT 5500 the direct Ethernet connection above is the tested way.
 
-#### Part check: "only this part, flag everything else"
+## Part check and quality station
 
-Put one good part under the sensor and press the **Part check** button in the sensor tile (or say "teach this part").
-Hold the part still and press **Teach this part**. From then on the cockpit knows where the top surface of that part
-is. Anything else that stays under the sensor for about half a second raises **Different part detected**, once per
-foreign part, with its height, how far it is from the taught part and what that means. A part that is still sliding
-in, or a lost target, raises nothing. Putting something under the sensor or taking it away never raises a vibration,
-noise or drift alert, taught part or not: such an alert waits one second and is dropped when a jump of the level
-explains it. A knock on the table still raises a vibration alert, one second later.
+1. With the plate empty, press **Part check** in the sensor tile and then **Teach the empty plate**.
+2. Put one good part under the laser, hold it still and press **Teach this part**. The accepted band is the spread of
+   the taught parts plus ±0.10 mm (change it in the panel; **Add another good part** widens it to your real spread).
+3. From now on every part that rests under the sensor for half a second is counted when it leaves: the counter in the
+   tile goes up and the part appears in the part log, on the phones and, in mission mode, next to the twin.
+4. A different part raises **Different part detected** at once. The tile turns red, the twin paints the part red and
+   every phone flashes.
+5. After three parts the station knows the rhythm. A part that stays far longer than usual (at least 8 s) is a
+   **possible jam**; one that follows far sooner than usual is a **possible double feed**. After eight good parts it
+   fits a straight line through their heights; when the parts move towards the edge of the band, it says in how many
+   parts they will leave it: a **height trend**.
+6. The tile's counter opens the **Quality station** sheet: counts, yield, rhythm, trend, the list of parts, the charts
+   (height of every part, bar chart, height spread), **Download for Excel** and **New run**.
 
-- The accepted band is the spread of the taught parts plus a margin (starting value ±0.10 mm, change it in the
-  panel). **Add another good part** widens the band to the real spread of your parts.
-- **Teach the empty plate** lets the cockpit say "nothing under the sensor" for a part taken away (no alert) and show
-  the height of the part above the plate.
-- The taught part is kept in `backend/data/part_reference.json` (git-ignored), so it survives a restart.
-- Limit, said honestly: a distance sensor sees the height of the top surface only. A different part with the same
-  height, or a hole under the spot, cannot be told apart.
-- Rehearse without parts: `python scripts/fake_ild5500.py --scenario parts --after 40` in `backend/`.
+The taught part is kept in `backend/data/part_reference.json`, the part log in `backend/data/part_log.jsonl` (both
+git-ignored), so a restart loses neither. Said honestly: a distance sensor sees the height of the top surface only. A
+different part with the same height cannot be told apart, and two equal parts that follow without the plate showing
+in between look like one part that stays long.
 
-`SOURCE_OVERRIDE=simulator` in `.env` forces dummy data for every sensor:
-the safe switch if hardware misbehaves on stage.
+## Rehearse without the sensor
 
----
+`backend/scripts/fake_ild5500.py` plays an optoNCDT 5500 on `127.0.0.1:1024` with the same Ethernet format. Start it,
+set `LIVE_SENSOR_HOST=127.0.0.1` in `backend/.env` and start the cockpit.
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe scripts\fake_ild5500.py --scenario line --after 15
+```
+
+`line`: the empty plate (8 mm) for 15 s, then part after part, 6 mm high; part 1 rests 8 s so you can teach it. Every
+23rd part is a foreign one, the parts slowly get lower (a height trend), one follows almost at once (a double feed)
+and one stays 14 s (a jam). Other scenarios: `quiet`, `parts`, `extended` (the target leaves the measuring range),
+`no-target`, `out-of-range`. `--help` lists the options.
+
+## Using the cockpit
+
+| Key or command | What happens |
+| --- | --- |
+| Hold **Space**, speak | Talk to Epsilon (or type in the box) |
+| "how many parts", "part log" | The quality station sheet and the counts, spoken |
+| "show me a bar chart", "show the part heights", "show a histogram" | The chart, ready to explain |
+| "explain this chart" | Epsilon walks through it, marking each finding |
+| "write a report" | The report on the last alert |
+| "teach this part" | The part check |
+| **J** | Mission mode on and off |
+| **Q** | The code for the phones |
+| **R** | The report on the last alert |
+| **Delete** | Remove the front chart |
+| **Escape** | Close a sheet |
+
+### Phones
+
+The phones join through a public address of the laptop (for example a Cloudflare tunnel:
+`cloudflared tunnel --url http://localhost:8000`). Press **Q**, paste the tunnel address once (it is remembered),
+and the judges scan the code. The page asks for nothing but an optional name.
+
+### AI voice
+
+With `OPENAI_API_KEY` in `backend/.env` the copilot speaks through the OpenAI Realtime API. The model only phrases:
+counts, heights and limits come from tool calls on the real data (`get_data`, `analyze`, `get_part_check`,
+`get_parts`, `make_chart`, `explain_chart`, `create_report`, `search_manual`). Without a key, the browser voice and
+typed commands run the same cockpit.
 
 ## How it works
 
 ```
- Sensors (simulator | CSV replay | optoNCDT 5500 over Ethernet | MEDAQLib template)
-        │  500 samples/s per sensor
-        ▼
- Backend (Python, FastAPI)
-   buffers ─ 10 min full rate, 8 h per-second min/mean/max,
-             full-rate snapshots around every alert
-   analysis ─ noise, FFT peak, drift trend, minutes to tolerance limit
-   alert rules ─ vibration, noise, drift, out of range, invalid (with cooldowns)
-   incidents ─ a whole file, same rules: evidence, checks, explanation, spot on the part, report
-   charts ─ histogram, box plot, scatter, bar, shift timeline,
-            each with the steps that explain it
-        │ WebSocket: samples, status, events          │ REST: views + AI tools
-        ▼                                              ▼
- Cockpit (React)  ◄──── WebRTC audio + tool calls ────► OpenAI Realtime
-   3D twin, chart stage, copilot, mission HUD
-        │
- Phone page (/phone) ◄── WebSocket: events only
+ optoNCDT 5500 ── Ethernet (or MEDAQLib) ── backend (FastAPI, Python)
+                                              acquisition: 20 kHz averaged to 500 values per second
+                                              alert rules: out of the measuring range, invalid readings
+                                              part check: taught part, empty plate, different part
+                                              quality station: part log, rhythm, jam, double feed, trend
+                                              charts, explanations, reports, manuals
+                                            ── WebSocket ── cockpit (React, three.js, ECharts)
+                                                        └── phones
 ```
 
-* **The AI never makes up numbers.** Python computes every value; the voice
-  model calls tools (`get_data`, `analyze`, `make_chart`, `explain_chart`,
-  `show_shift`, `suggest_settings`, `create_report`, `list_incidents`,
-  `investigate_incident`) and only phrases the answer.
-* **An incident is a chain, not a picture.** Each incident keeps the window of
-  data around it, the rules that fired, the checks and their results, the
-  explanation in order, the checks to carry out (with the playbook in
-  `backend/config/playbook.yaml`), what the file does not tell, and the place on
-  the part, when the part speed is known. The chart, the twin, the copilot and
-  the report all read the same record.
-* **Explanations are computed, not guessed.** Every chart comes with its
-  explanation steps, each tied to a place on the chart (a line, a band, a
-  point, a time range). The copilot says the steps, and the cockpit reveals
-  each marker as its sentence starts.
-* **Zooming never loses a spike.** Each slice of the timeline keeps its lowest
-  and highest reading as a band around the average, so a knock of a few
-  milliseconds is still visible in the eight-hour view.
-* **Shakes are real detections.** A phone shake knocks the simulated fixture;
-  the same rules that watch the real sensors find the vibration.
-* **Spoken alerts.** The backend detects an event and puts it into the voice
-  session as a `[MONITORING ALERT]` message, so the copilot speaks first, like
-  Jarvis. The cockpit makes no effect sounds; only the judges' phones play an
-  alert tone.
-* **The API key never reaches the browser.** The backend mints short-lived
-  client secrets.
-* **Offline fallback.** Without an API key or internet, typed commands and the
-  browser's own speech recognition and voice still run the whole demo script.
-
-Message formats and tool definitions: [docs/CONTRACT.md](docs/CONTRACT.md).
-
-### Project layout
-
-```
-backend/
-  app/
-    main.py          REST API, WebSockets, serves the built cockpit
-    engine.py        acquisition loop: sources -> buffers -> rules -> clients
-    detection.py     alert rules
-    analysis.py      signal maths (pure functions)
-    views.py         data behind the live chart views
-    explore.py       charts the copilot picks: histogram, box plot, scatter, bar
-    insights.py      the steps that explain each chart, tied to places on it
-    timeline.py      the shift timeline: picks the finest data for each zoom level
-    tools.py         AI tools that run on the backend
-    assistant.py     setup assistant: settings proposal and preview on real data
-    report.py        incident reports as JSON and as a printable page
-    realtime.py      voice: instructions, tool schemas, client secrets
-    ingest.py        reads a file: delimiter, decimals, time column, units, counter columns
-    recording_service.py, recording_api.py   loading, analysing and the incident routes
-    incidents.py     finds the incidents of a whole recording, with evidence and snapshot
-    investigate.py   checks, explanation, checks to carry out and location of one incident
-    incident_report.py, incident_tools.py    the incident report page and the copilot's incident tools
-    sources/         simulator, CSV replay, recording playback, the live optoNCDT 5500 (ild5500.py), MEDAQLib template
-  config/sensors.yaml   <- your sensors and thresholds
-  config/sensors.live.yaml   <- the same for the real optoNCDT 5500, switched on with SENSORS_FILE
-  config/playbook.yaml  <- the checks to carry out, by kind of alert
-  scripts/chain_check.py       the anomaly chain, one PASS or FAIL per step
-  scripts/sensor_check.py      checks the live sensor connection and says in plain words what to fix
-  scripts/fake_ild5500.py      plays an optoNCDT 5500 on your laptop, to rehearse without the sensor
-  scripts/make_demo_recording.py   simulated exports in messy formats, for tests
-  .env                  <- your keys and switches
-  tests/             pytest suite
-frontend/
-  src/controller.ts  browser-side brain: alerts, voice, commands, tools
-  src/lib/voice.ts   OpenAI Realtime over WebRTC with push-to-talk
-  src/lib/commands.ts offline commands (English and German)
-  src/lib/charts.ts  ECharts views (light and mission themes) and the explanation markers
-  src/lib/twin.ts    the 3D digital twin (three.js), including the painted part
-  src/lib/incidents.ts the chart and the spot on the part for one incident
-  src/components/    twin, readouts, chart stage, shift timeline, copilot, mission HUD, report, setup check
-  src/components/RecordingSheet.tsx   Load file: read, check, limits, analyse
-  src/components/IncidentDock.tsx     the incident list and the incident panel
-  src/phone/         the judges' phone page: alerts, flashlight, shake detection
-docs/                contract, demo script, team walkthrough, screenshots
-```
-
----
-
-## Using the cockpit
-
-| Action | How |
-| --- | --- |
-| Talk | Hold **Space** or the mic button, speak, release |
-| Type a command | Copilot box: "show me the last five minutes", "is the sensor broken?", "compare the sensors", "show the drift", "status", "write a report", "check the setup of sensor 1", "go back" |
-| Ask for a chart | "how are the readings spread?", "which hour was calmest?", "show the spread per sensor", "do the sensors move together?", "compare the noise" |
-| Explain a chart | "explain this chart" or "walk me through it" |
-| Load a recording | **Load file** in the top bar: choose the file, read it, set the part speed and limits, analyse |
-| Incidents | **I**, the Incidents button, or type "incidents" |
-| One incident | Click it in the list, or type "incident 2" |
-| Explain an incident | **Explain** in the incident panel, or type "explain incident 2" |
-| Back to the simulator | **Load file**, then **Back to the simulator** |
-| Whole shift | "show me the whole shift" or "what happened today?". Scroll or pinch to zoom, drag to pan, click an alert line to fly to it |
-| Mission mode | **J**, the Mission mode button, or say "mission mode" |
-| Latest incident report | **R**, "Write report" on an alert, or say "write a report" |
-| Setup check | "Check it" under a sensor, "Check setup" in the conversation, or ask "is sensor 1 set up well?" |
-| Previous chart | **←** or say "go back" (the chart flies back into the stack) |
-| Dismiss chart | **Delete** or say "dismiss" (the chart turns to dust) |
-| Phone QR code | **Q** |
-| Demo controls | **D**, then **1** tap, **2** start drift, **3** stop drift, **4** noise burst, **5** dropout, **6** misconfigure sensor 1, **7** dent in the part, **0** reset |
-| Voice on/off | **M** |
-| Hand gestures | Hand button in the top bar: open palm = back, fist = dismiss, thumbs up = confirm |
-
-Setting changes always need a yes: "set averaging on sensor 1 to 64" → the
-copilot asks → "yes". Higher averaging visibly lowers the noise in the
-simulator.
-
-### AI voice
-
-Click **Connect AI voice** (needs `OPENAI_API_KEY` and internet). Without it
-the cockpit runs in offline mode: browser speech recognition (Chrome/Edge,
-needs internet) or typed commands, answered by the browser's voice. Edge on
-Windows has the most natural offline voices.
-
-Microphone access only works on `localhost` or HTTPS. Build with
-`gpt-realtime-mini`; switch `OPENAI_REALTIME_MODEL` to the full model for the
-final demo. A day of testing costs a few dollars.
-
-### Judges' phones
-
-The phones need to reach your laptop over the internet. The simplest way is a
-Cloudflare quick tunnel ([download cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)):
-
-```bash
-cloudflared tunnel --url http://localhost:8000
-```
-
-It prints an `https://….trycloudflare.com` address. Press **Q** in the
-cockpit, paste the address, and show the QR code on the projector. Judges tap
-"Join live alerts"; the top bar counts connected phones. Test with a few
-phones on mobile data the evening before. Set a strong `COCKPIT_TOKEN`: the
-tunnel makes the cockpit reachable from anywhere.
-
-<img src="docs/screenshot-phone.png" alt="Phone alert" width="220">
-
-Phones flash, beep and (on Android) vibrate and blink the flashlight. iPhones
-do not let websites vibrate, so the flash and the sound carry the alert there.
-Every alert on a phone links to its incident report.
-
-**Shake the machine.** Judges can type their name when they join. "Shake the
-machine" asks for motion access (iPhones show a prompt), then three firm
-shakes knock the fixture. "Knock instead" does the same with a tap, for
-laptops and phones without a motion sensor. Shakes only work while the cockpit
-runs on simulated sensors, and each phone can knock once every few seconds.
-
-### Hand gestures (optional)
-
-Gestures run fully in the browser with MediaPipe. For offline use, download
-the model once by running `npm run fetch:gestures` in `frontend`. Without it the
-cockpit loads the model from the internet when you switch gestures on.
-
----
+- `backend/app/sources/ild5500.py`: the sensor's Ethernet stream; `medaqlib.py`: MEDAQLib through ctypes.
+- `backend/app/partcheck.py`: teaching and the different-part alert; `station.py`: the quality station.
+- `backend/app/part_charts.py` and `explore.py`: the charts and their explanation steps.
+- `backend/app/report.py`: the reports; `knowledge.py`: the manuals.
+- `frontend/src/lib/twin.ts`: the digital twin; `components/PartsPanel.tsx`: the quality station sheet.
+- `docs/CONTRACT.md`: the messages and endpoints between backend and cockpit.
 
 ## Tests
 
 ```powershell
-# 125 tests: analysis, alert rules, replay, API, WebSockets, assistant, reports, shakes, charts, shift timeline, file reading, incidents, copilot tools, manuals and recommendations (on macOS/Linux: .venv/bin/python -m pytest)
 cd backend
-.\.venv\Scripts\python.exe -m pytest
-
-# the anomaly chain on a running cockpit: one PASS or FAIL per step
-.\.venv\Scripts\python.exe scripts\chain_check.py
-
-# the manuals and the AI recommendations with your real key (a few cents)
-.\.venv\Scripts\python.exe scripts\rag_check.py
-
-# in frontend
-npm run typecheck
+.\.venv\Scripts\python.exe -m pytest          # 151 tests: sensor stream, MEDAQLib, part check, quality station,
+                                              # charts, reports, manuals, API and WebSockets
+cd ..\frontend
+npx tsc --noEmit
+npm run build
 ```
 
 ## Troubleshooting
 
-| Problem | Fix |
+| Problem | Do this |
 | --- | --- |
-| Page says "Frontend not built" | In `frontend`, run `npm install`, then `npm run build` |
-| `EBADENGINE` warnings, then `ERR_UNKNOWN_FILE_EXTENSION` for `typescript\bin\tsc` | Node.js is too old. Install the LTS version from nodejs.org, open a new terminal and run the setup again |
-| Demo buttons or voice say "locked" | Open the cockpit with `?token=<COCKPIT_TOKEN>` or click the lock icon |
-| "Voice is off: set OPENAI_API_KEY" | Add the key to `backend/.env` and restart the backend |
-| Voice connects but never answers | Check the model name in `.env`; look at the browser console for the error |
-| No microphone prompt | Use `http://localhost:…` or HTTPS, not the laptop's IP address |
-| Top bar says "fallback" | The live source failed; the reason is in the sensor tile tooltip and the backend log |
-| Top bar says "sensor not connected" | Run `scripts\sensor_check.py` in `backend`. It names the cause: cable, laptop address, sensor address or port, or an output that is not set to Ethernet. If the sensor connects but sends nothing, close sensorTOOL and the sensor's web chart in case they hold the connection |
-| "Connected, but most readings are invalid" | The sensor sees no target, the part is outside the measuring range, or the surface is too dark or too shiny. The tile shows the sensor's status text |
-| The sensor's web page does not open | The laptop's Ethernet adapter needs an address in the sensor's network: `169.254.168.10`, mask `255.255.0.0` |
-| The sheet asks for a sample rate | The file has no time column. Type its rate in Hz |
-| The twin shows no spot on the part | Type the part speed in the Load a recording sheet. 0 means unknown |
-| "No incident was found" after analysing | Check the limits and the part speed in the sheet, then analyse again |
-| Too many or too few alerts | Tune `detection` in `sensors.yaml` (ratios and cooldowns) |
-| Port 8000 busy | Change `PORT` in `.env` |
+| The tile says "sensor not connected" | Check the cable, the laptop's address (169.254.168.10, mask 255.255.0.0) and that nothing else reads the sensor. The cockpit reconnects by itself. |
+| "Connected, but no readings" | In the sensor's web page set the output interface to Ethernet and Server TCP/IP on port 1024. |
+| "Most readings are invalid" | No target, the target is outside the measuring range, or the surface is too dark or shiny. The tile shows the sensor's own status. |
+| Taking a part away raises "Different part" | Teach the empty plate in the part check. |
+| The counter does not count | The station needs both the empty plate and a good part taught. |
+| "Possible jam" while you talk | A part lay under the sensor much longer than the parts before. Take it away, or start a **New run** before the pitch. |
+| The reading differs from the web page | The sensor was mastered or zeroed: clear it in the web page, or set `reference_mm` in `sensors.live.yaml`. |
+| The page looks old after a pull | `npm run build` in `frontend`, restart, Ctrl+F5. |
+| The 3D view is blank | Use Chrome or Edge (WebGL). |

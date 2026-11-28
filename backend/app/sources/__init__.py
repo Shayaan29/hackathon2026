@@ -1,26 +1,31 @@
-"""Data sources: simulator (dummy data), CSV replay, live Ethernet (optoNCDT 5500) and live MEDAQLib."""
+"""Data sources: the optoNCDT 5500 over Ethernet, and any sensor MEDAQLib supports."""
 
 from __future__ import annotations
 
-from ..config import SensorConfig
-from .base import SensorSource, SourceError
+from typing import Callable
+
+from ..config import SOURCE_TYPES, SensorConfig
+from .base import SensorSource, SourceError, UnavailableSource
 from .ild5500 import Ild5500Source
 from .medaqlib import MedaqlibSource
-from .replay import CsvReplaySource
-from .simulator import SimulatedSensor
 
-__all__ = ["SensorSource", "SourceError", "create_source", "SimulatedSensor",
-           "CsvReplaySource", "MedaqlibSource", "Ild5500Source"]
+__all__ = ["SensorSource", "SourceError", "UnavailableSource", "create_source", "register_source",
+           "MedaqlibSource", "Ild5500Source"]
+
+_FACTORIES: dict[str, Callable[[SensorConfig, int], SensorSource]] = {
+    "ild5500": Ild5500Source,
+    "medaqlib": MedaqlibSource,
+}
+
+
+def register_source(kind: str, factory: Callable[[SensorConfig, int], SensorSource]) -> None:
+    """Add a source type. The tests add their simulated sensor this way; the cockpit itself has none."""
+    _FACTORIES[kind] = factory
+    SOURCE_TYPES.add(kind)
 
 
 def create_source(cfg: SensorConfig, rate_hz: int) -> SensorSource:
-    kind = cfg.source_type
-    if kind == "simulator":
-        return SimulatedSensor(cfg, rate_hz)
-    if kind == "replay":
-        return CsvReplaySource(cfg, rate_hz)
-    if kind == "medaqlib":
-        return MedaqlibSource(cfg, rate_hz)
-    if kind == "ild5500":
-        return Ild5500Source(cfg, rate_hz)
-    raise SourceError(f"unknown source type {kind!r}")
+    factory = _FACTORIES.get(cfg.source_type)
+    if factory is None:
+        raise SourceError(f"unknown source type {cfg.source_type!r}")
+    return factory(cfg, rate_hz)

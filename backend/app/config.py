@@ -2,9 +2,8 @@
 
 Two files hold everything a team is expected to change:
 
-* ``backend/.env``                 secrets and runtime switches (API key, model, port, token)
-* ``backend/config/sensors.yaml``  sensors, tolerances, dummy settings and alert thresholds
-                                   (``sensors.live.yaml`` is the same for the real optoNCDT 5500)
+* ``backend/.env``                      secrets and runtime switches (API key, model, port, token)
+* ``backend/config/sensors.live.yaml``  the sensor, how it is connected, and the alert thresholds
 
 A sensor of a known model (the optoNCDT ILD5500 family) gets its data sheet from ``sensor_specs``: with
 ``tolerance: measuring_range`` the limits are the sensor's own measuring range, and readings are shown in the
@@ -35,8 +34,13 @@ FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
 
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
-SOURCE_TYPES = ("simulator", "replay", "medaqlib", "ild5500")
-EVENT_KINDS = ("vibration", "noise", "drift", "out_of_range", "invalid", "wrong_part")
+# where the numbers come from; sources.register_source adds more (the tests add their simulated sensor)
+SOURCE_TYPES = {"ild5500", "medaqlib"}
+EVENT_KINDS = ("out_of_range", "invalid", "wrong_part", "jam", "double_feed", "trend")
+# keys an older sensor file may still contain; they are read and ignored
+RETIRED_KEYS = {"fixture", "settings", "part_rpm", "vibration_window_s", "vibration_ratio", "vibration_min_hz",
+                "vibration_min_prominence", "noise_window_s", "noise_ratio", "noise_hold_s", "drift_window_s",
+                "drift_min_rate_per_min", "drift_min_r2", "drift_hold_s", "drift_critical_minutes"}
 
 
 class ConfigError(ValueError):
@@ -111,48 +115,6 @@ class Display:
 
 
 @dataclass(frozen=True)
-class SettingSpec:
-    """One adjustable sensor setting (dummy until the real sensor is wired in)."""
-
-    name: str
-    default: Any
-    minimum: float | None = None
-    maximum: float | None = None
-    options: tuple[Any, ...] | None = None
-    description: str = ""
-
-    def validate(self, value: Any) -> Any:
-        """Return ``value`` coerced to the setting's type, or raise ValueError."""
-        if self.options is not None:
-            for option in self.options:
-                if str(option).lower() == str(value).strip().lower():
-                    return option
-            allowed = ", ".join(str(o) for o in self.options)
-            raise ValueError(f"{self.name} must be one of: {allowed}")
-        if isinstance(self.default, (int, float)) and not isinstance(self.default, bool):
-            try:
-                number = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{self.name} must be a number") from exc
-            if self.minimum is not None and number < self.minimum:
-                raise ValueError(f"{self.name} must be at least {self.minimum:g}")
-            if self.maximum is not None and number > self.maximum:
-                raise ValueError(f"{self.name} must be at most {self.maximum:g}")
-            return int(round(number)) if isinstance(self.default, int) else number
-        return str(value)
-
-    def public(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"default": self.default, "description": self.description}
-        if self.options is not None:
-            data["options"] = list(self.options)
-        if self.minimum is not None:
-            data["min"] = self.minimum
-        if self.maximum is not None:
-            data["max"] = self.maximum
-        return data
-
-
-@dataclass(frozen=True)
 class SensorConfig:
     id: str
     name: str
@@ -160,16 +122,14 @@ class SensorConfig:
     unit: str
     nominal: float
     tolerance: Tolerance
-    fixture: str
     source: dict[str, Any]
-    settings: dict[str, SettingSpec]
     spec: SensorSpec | None = None         # the data sheet of a known model
     display: Display | None = None         # positions in the sensor's own unit (mm), signal stays in µm
     tolerance_kind: str = "part"           # part (limits of the workpiece) | measuring_range (of the sensor)
 
     @property
     def source_type(self) -> str:
-        return str(self.source.get("type", "simulator"))
+        return str(self.source.get("type", ""))
 
     @property
     def limit_word(self) -> str:
@@ -199,38 +159,20 @@ class SensorConfig:
             "limit_word": self.limit_word,
             "display": self.display.as_dict() if self.display else None,
             "spec": self.spec.public() if self.spec else None,
-            "fixture": self.fixture,
             "source": self.source_type,
-            "settings": {name: spec.public() for name, spec in self.settings.items()},
         }
 
 
 @dataclass(frozen=True)
 class DetectionConfig:
     eval_interval_s: float = 0.25
-    baseline_s: float = 20.0
-    vibration_window_s: float = 1.0
-    vibration_ratio: float = 4.0
-    # slower movements (a dent passing once per turn, runout) are not vibration
-    vibration_min_hz: float = 12.0
-    vibration_min_prominence: float = 6.0
-    noise_window_s: float = 4.0
-    noise_ratio: float = 2.5
-    noise_hold_s: float = 2.0
-    drift_window_s: float = 30.0
-    drift_min_rate_per_min: float = 3.0
-    drift_min_r2: float = 0.8
-    drift_hold_s: float = 8.0
-    drift_critical_minutes: float = 5.0
+    baseline_s: float = 20.0            # the noise shown in the sensor tile is learned from this much data
     invalid_window_s: float = 1.0
     invalid_min_share: float = 0.2
     out_of_range_window_s: float = 0.5
     rearm_s: float = 3.0
     cooldown_s: dict[str, float] = field(
         default_factory=lambda: {
-            "vibration": 10.0,
-            "noise": 30.0,
-            "drift": 60.0,
             "out_of_range": 30.0,
             "invalid": 20.0,
         }
@@ -243,7 +185,6 @@ class EngineConfig:
     fast_buffer_s: int = 600
     slow_buffer_s: int = 28800
     backfill_s: int = 900
-    part_rpm: float = 8.6  # how fast the measured part turns, for the twin and the runout
 
 
 @dataclass(frozen=True)
@@ -263,17 +204,14 @@ class Settings:
     cockpit_token: str
     host: str
     port: int
-    source_override: str
     sensors_file: Path
     cockpit: CockpitConfig
     engine: EngineConfig
     detection: DetectionConfig
     sensors: tuple[SensorConfig, ...]
     # manuals and recommendations (all optional; the defaults work without a .env entry)
-    text_model: str = ""
     embed_model: str = "text-embedding-3-small"
     knowledge_dir: Path = Path(__file__).resolve().parent.parent / "data" / "knowledge"
-    recommend_prefetch: bool = True
     openai_base_url: str = "https://api.openai.com/v1"
     # written answers from the manuals (Manuals panel) and the typed chat when voice is off
     answer_model: str = "gpt-5-mini"
@@ -304,20 +242,6 @@ def _as_float(value: Any, where: str) -> float:
         raise ConfigError(f"{where} must be a number, got {value!r}") from exc
 
 
-def _parse_setting(name: str, raw: Any) -> SettingSpec:
-    if not isinstance(raw, dict):
-        return SettingSpec(name=name, default=raw)
-    options = raw.get("options")
-    return SettingSpec(
-        name=name,
-        default=raw.get("value"),
-        minimum=raw.get("min"),
-        maximum=raw.get("max"),
-        options=tuple(options) if options is not None else None,
-        description=str(raw.get("description", "")),
-    )
-
-
 def _parse_display(raw: Any, unit: str, kind: str, where: str) -> Display | None:
     """``display: mm`` (or {unit: mm, decimals: 4}) shows positions in millimetres; the signal stays in µm."""
     if raw is None:
@@ -337,7 +261,7 @@ def _parse_display(raw: Any, unit: str, kind: str, where: str) -> Display | None
     return Display(decimals=decimals)
 
 
-def _parse_sensor(raw: dict[str, Any], index: int, source_override: str) -> SensorConfig:
+def _parse_sensor(raw: dict[str, Any], index: int) -> SensorConfig:
     where = f"sensors[{index}]"
     if not isinstance(raw, dict):
         raise ConfigError(f"{where} must be a mapping")
@@ -385,11 +309,10 @@ def _parse_sensor(raw: dict[str, Any], index: int, source_override: str) -> Sens
         nominal = _as_float(nominal_raw, f"{where}.nominal")
 
     source = {key: expand_env(value, f"{where}.source.{key}")
-              for key, value in dict(raw.get("source") or {"type": "simulator"}).items()}
-    if source_override:
-        source["type"] = source_override
-    if source.get("type", "simulator") not in SOURCE_TYPES:
-        raise ConfigError(f"{where}.source.type must be one of {', '.join(SOURCE_TYPES)}")
+              for key, value in dict(raw.get("source") or {}).items()}
+    if source.get("type") not in SOURCE_TYPES:
+        raise ConfigError(f"{where}.source.type must be one of {', '.join(sorted(SOURCE_TYPES))}, "
+                          f"got {source.get('type')!r}")
     if source.get("type") == "ild5500" and spec is not None:
         given = source.get("range_mm")
         if given not in (None, "") and str(given).strip() != str(int(spec.measuring_range_mm)):
@@ -406,7 +329,8 @@ def _parse_sensor(raw: dict[str, Any], index: int, source_override: str) -> Sens
                 raise ConfigError(f"{where}.tolerance: measuring_range cannot be combined with source.invert: "
                                   "the readings are distances from the start of the range")
 
-    settings_raw = raw.get("settings") or {}
+    for key in RETIRED_KEYS & set(raw):
+        log.info("%s.%s is no longer used and is ignored", where, key)
     return SensorConfig(
         id=sensor_id,
         name=str(raw.get("name", sensor_id)),
@@ -414,9 +338,7 @@ def _parse_sensor(raw: dict[str, Any], index: int, source_override: str) -> Sens
         unit=unit,
         nominal=nominal,
         tolerance=tolerance,
-        fixture=str(raw.get("fixture", "default")),
         source=source,
-        settings={name: _parse_setting(name, value) for name, value in settings_raw.items()},
         spec=spec,
         display=_parse_display(raw.get("display"), unit, tolerance_kind, where),
         tolerance_kind=tolerance_kind,
@@ -430,6 +352,9 @@ def _parse_detection(raw: dict[str, Any] | None) -> DetectionConfig:
     cooldown.update({str(k): float(v) for k, v in (raw.pop("cooldown_s", None) or {}).items()})
     values: dict[str, Any] = {}
     for key, value in raw.items():
+        if key in RETIRED_KEYS:
+            log.info("detection.%s is no longer used and is ignored", key)
+            continue
         if not hasattr(defaults, key):
             raise ConfigError(f"detection.{key} is not a known setting")
         values[key] = _as_float(value, f"detection.{key}")
@@ -444,17 +369,12 @@ def _parse_engine(raw: dict[str, Any] | None) -> EngineConfig:
         values[key] = int(raw.get(key, getattr(defaults, key)))
     if values["analysis_rate_hz"] < 50:
         raise ConfigError("engine.analysis_rate_hz must be at least 50")
-    values["part_rpm"] = float(raw.get("part_rpm", defaults.part_rpm))
     return EngineConfig(**values)
 
 
 def load_settings(sensors_file: str | Path | None = None) -> Settings:
     """Read .env and the sensor file into an immutable Settings object."""
-    source_override = _env("SOURCE_OVERRIDE").lower()
-    if source_override and source_override not in SOURCE_TYPES:
-        raise ConfigError(f"SOURCE_OVERRIDE must be empty or one of {', '.join(SOURCE_TYPES)}")
-
-    path = Path(sensors_file or _env("SENSORS_FILE", "config/sensors.yaml"))
+    path = Path(sensors_file or _env("SENSORS_FILE", "config/sensors.live.yaml"))
     if not path.is_absolute():
         path = BACKEND_DIR / path
     if not path.exists():
@@ -465,7 +385,7 @@ def load_settings(sensors_file: str | Path | None = None) -> Settings:
     sensors_raw = doc.get("sensors") or []
     if not sensors_raw:
         raise ConfigError(f"{path.name} defines no sensors")
-    sensors = tuple(_parse_sensor(raw, i, source_override) for i, raw in enumerate(sensors_raw))
+    sensors = tuple(_parse_sensor(raw, i) for i, raw in enumerate(sensors_raw))
     ids = [s.id for s in sensors]
     if len(ids) != len(set(ids)):
         raise ConfigError("sensor ids must be unique")
@@ -486,16 +406,13 @@ def load_settings(sensors_file: str | Path | None = None) -> Settings:
         cockpit_token=_env("COCKPIT_TOKEN"),
         host=_env("HOST", "0.0.0.0"),
         port=_env_int("PORT", 8000),
-        source_override=source_override,
         sensors_file=path,
         cockpit=cockpit,
         engine=_parse_engine(doc.get("engine")),
         detection=_parse_detection(doc.get("detection")),
         sensors=sensors,
-        text_model=_env("OPENAI_TEXT_MODEL"),
         embed_model=_env("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
         knowledge_dir=Path(_env("KNOWLEDGE_DIR", str(Path(__file__).resolve().parent.parent / "data" / "knowledge"))),
-        recommend_prefetch=_env("RECOMMEND_PREFETCH", "1").lower() not in ("0", "false", "no", "off"),
         openai_base_url=_env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         answer_model=_env("OPENAI_ANSWER_MODEL", "gpt-5-mini"),
         answer_reasoning=_env("OPENAI_ANSWER_REASONING", "low").lower(),

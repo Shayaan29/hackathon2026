@@ -1,7 +1,7 @@
 """Incident reports: everything a maintenance technician needs about one alert.
 
-``build`` collects the facts (event, signal around it, analysis, timeline,
-likely causes, actions, settings check). ``render_html`` turns them into one
+``build`` collects the facts (event, signal around it, analysis, the alerts
+before it, likely causes, actions). ``render_html`` turns them into one
 standalone page with inline SVG charts, so the same report works on the
 cockpit, on a phone and as a printed PDF.
 """
@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from . import assistant, sensor_advice, views
+from . import sensor_advice
 from .analysis import decimate_minmax, round_or_none
 from .engine import Engine
 from .sensor_specs import DATASHEET, DS_PAGE, MANUAL, reasons_text
@@ -28,9 +28,11 @@ class ReportError(LookupError):
 
 
 KIND_TITLE = {
-    "vibration": "Vibration", "noise": "Increased noise", "drift": "Drift",
     "out_of_range": "Out of tolerance", "invalid": "Invalid readings", "wrong_part": "Different part",
+    "jam": "Possible jam", "double_feed": "Possible double feed", "trend": "Height trend",
 }
+# alerts of the quality station: their report shows the heights of the last parts
+STATION_KINDS = ("jam", "double_feed", "trend", "wrong_part")
 
 
 def kind_title(kind: str, limit_word: str = "tolerance") -> str:
@@ -42,42 +44,8 @@ PRIORITY = {"critical": "P1 (urgent)", "warning": "P2 (today)", "info": "P3 (pla
 
 
 def _causes_and_actions(event: dict[str, Any], unit: str, related: list[str]) -> tuple[list[str], list[str]]:
-    n = event.get("numbers", {})
     kind = event["kind"]
-    if kind == "vibration":
-        f = n.get("frequency_hz")
-        causes = [
-            f"Mechanical excitation of the fixture or machine table at {f} Hz "
-            f"({float(f) * 60:.0f} per minute), for example an impact, a nearby machine or a loose clamp."
-            if f else "Mechanical excitation of the fixture or machine table.",
-            "Resonance of the sensor bracket, which rings at its own frequency after a knock.",
-        ]
-        if related:
-            causes.insert(0, f"The same vibration reached {len(related) + 1} sensors at the same moment, so "
-                             "it most likely came through the shared fixture, not from one sensor.")
-        actions = ["Check the mounting screws and the stiffness of the sensor bracket.",
-                   f"Look for machines or drives running near {f} Hz." if f else
-                   "Look for nearby machines or drives that could excite the fixture.",
-                   "If it repeats, decouple or damp the fixture, or pause measuring while it rings."]
-    elif kind == "drift":
-        causes = ["Thermal expansion of the fixture or the part. Steel grows about 12 µm per metre "
-                  "and degree Celsius.",
-                  "Sensor or machine still warming up.",
-                  "Slow mechanical creep of the mounting, or wear on the measured surface."]
-        fm = event.get("forecast_min")
-        actions = ["Check ambient and machine temperature against the start of the shift.",
-                   "Measure a reference part to tell part drift from setup drift.",
-                   f"Re-zero or recalibrate within {fm:.0f} minutes, before the tolerance limit is reached."
-                   if fm else "Re-zero or recalibrate the setup, then watch whether the trend returns."]
-    elif kind == "noise":
-        causes = ["Dirty sensor window or optics.",
-                  "Difficult target surface: shiny, dark or structured.",
-                  "Ambient light or electrical interference on the sensor cable.",
-                  "Averaging set too low for this surface."]
-        actions = ["Clean the sensor window.",
-                   "Check cable shielding and grounding.",
-                   "Apply the settings the setup assistant suggests below."]
-    elif kind == "out_of_range":
+    if kind == "out_of_range":
         causes = ["The part itself is outside tolerance.",
                   "The sensor or fixture moved, so the reference no longer matches."]
         actions = ["Check the part with a reference gauge.",
@@ -92,6 +60,28 @@ def _causes_and_actions(event: dict[str, Any], unit: str, related: list[str]) ->
                    "Hold back the parts measured since this alert until the cause is clear.",
                    "If the right part reads differently now, check the sensor mounting and teach the part again.",
                    "Teach a second or third good part so the accepted band follows the real spread of the parts."]
+    elif kind == "jam":
+        causes = ["The part is stuck: held by a guide, a burr or the part behind it.",
+                  "The conveyor or the handling stopped with a part under the sensor.",
+                  "Someone left a part on the plate on purpose, for example during a break (no fault)."]
+        actions = ["Look at the station: is the part stuck, or is the line stopped?",
+                   "Clear the jam, then check this part and the next one for damage.",
+                   "If parts are meant to stay longer from now on, start a new run so the station learns the "
+                   "new rhythm."]
+    elif kind == "double_feed":
+        causes = ["Two parts were fed at once or right after each other: a feeder fault.",
+                  "A part was put on the plate by hand right after the previous one.",
+                  "The previous part was lifted or moved, so the plate showed only for a moment."]
+        actions = ["Check whether two parts came through: look for a part stuck to the previous one.",
+                   "Check the feeder and its timing.",
+                   "Check both parts before they go on to the next station."]
+    elif kind == "trend":
+        causes = ["Tool wear: each part comes out a little higher or lower than the one before.",
+                  "The fixture or the sensor moves slowly, for example while the machine warms up.",
+                  "A new batch of material."]
+        actions = ["Measure the last good parts with a reference gauge.",
+                   "Plan a tool change or a correction before the parts leave the accepted band.",
+                   "Check the mounting of the sensor and the fixture, and the temperature of the station."]
     else:  # invalid
         causes = ["Target outside the measuring range, or tilted too far.",
                   "Surface too shiny or too dark for the current exposure.",
@@ -127,6 +117,20 @@ def _signal_around(engine: Engine, sid: str, t: float) -> dict[str, Any]:
     return {"t": [round(float(x), 3) for x in rel], "v": [round_or_none(float(v), 3) for v in dec]}
 
 
+def _parts_chart(engine: Engine, sid: str) -> dict[str, Any] | None:
+    """The heights of the last parts the quality station measured, with the band of the taught part."""
+    track = engine.partcheck.tracks.get(sid)
+    records = [r for r in engine.station.records(sid, 40) if r.height_um is not None]
+    if not records or track is None or track.reference is None or track.empty_um is None:
+        return None
+    ref, cfg = track.reference, engine.settings.sensor(sid)
+    return {"type": "parts", "title": f"Height of the last {len(records)} parts on {cfg.name}", "sensor": sid,
+            "x": [r.number for r in records], "v": [r.height_um for r in records],
+            "tolerance": {"low": track.empty_um - ref.center_um - ref.half_width_um,
+                          "high": track.empty_um - ref.center_um + ref.half_width_um},
+            "display": cfg.display.as_dict() if cfg.display else None}
+
+
 def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
     event = find_event(engine, event_id)
     sid = event["sensor"]
@@ -135,7 +139,6 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
     involved = [sid] + related
     sheet = sensor_advice.causes_and_actions(event, cfg, related)
     causes, actions = sheet if sheet is not None else _causes_and_actions(event, cfg.unit, related)
-    display = cfg.display.as_dict() if cfg.display else None
 
     charts: list[dict[str, Any]] = [{
         "type": "signal", "title": f"{engine.settings.sensor(s).name} around the alert",
@@ -143,23 +146,17 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
         "tolerance": {"low": engine.settings.sensor(s).tolerance.low,
                       "high": engine.settings.sensor(s).tolerance.high},
         "display": engine.settings.sensor(s).display.as_dict() if engine.settings.sensor(s).display else None,
-    } for s in involved]
-    if event["kind"] == "vibration":
-        spec = views.spectrum(engine, sid, event_id=event["id"])
-        charts.append({"type": "spectrum", "title": f"Frequency content, {cfg.name}",
-                       "freqs": spec["freqs"], "amps": spec["amps"], "peak": spec.get("peak")})
-    if event["kind"] == "drift":
-        d = views.drift(engine, sid)
-        charts.append({"type": "drift", "title": f"Trend and forecast, {cfg.name}", "display": display,
-            "limit_word": cfg.limit_word, **{
-            k: d.get(k) for k in ("t_rel", "values", "fit", "forecast", "tolerance")}})
+    } for s in involved] if event["kind"] != "trend" else []
+    if event["kind"] in STATION_KINDS:
+        parts = _parts_chart(engine, sid)
+        if parts is not None:
+            charts.append(parts)
 
     try:
         analysis = analyze(engine, sid, 120.0)
         observations = analysis.get("observations", [])
     except Exception:  # analysis is a bonus, the report must still render
         observations = []
-    setup = assistant.suggest(engine, sid)
     timeline = [e for e in engine.recent_events(limit=50, since=event["t"] - 900)
                 if e["sensor"] in involved or set(e.get("related_sensors", [])) & set(involved)]
     title = f"{kind_title(event['kind'], cfg.limit_word)} on {cfg.name}"
@@ -176,7 +173,7 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
     ticket = "\n".join([
         f"Title: {title}",
         f"Priority: {PRIORITY.get(event['severity'], event['severity'])}",
-        f"Component: {cfg.name} ({cfg.model}), fixture {cfg.fixture}",
+        f"Component: {cfg.name} ({cfg.model})",
         *ticket_sensor,
         f"Detected: {datetime.fromtimestamp(event['t']).strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -185,8 +182,6 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
         "Likely causes:", *[f"- {c}" for c in causes],
         "",
         "Next steps:", *[f"- {a}" for a in actions],
-        "",
-        f"Setup check: {setup['summary']}",
     ])
     return {
         "id": event["id"], "title": title, "generated_at": time.time(),
@@ -194,7 +189,6 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
         "event": event, "priority": PRIORITY.get(event["severity"], event["severity"]),
         "sensors": [{"id": s, "name": engine.settings.sensor(s).name,
                      "model": engine.settings.sensor(s).model, "unit": engine.settings.sensor(s).unit,
-                     "fixture": engine.settings.sensor(s).fixture,
                      "display": (engine.settings.sensor(s).display.as_dict()
                                  if engine.settings.sensor(s).display else None),
                      "limit_word": engine.settings.sensor(s).limit_word,
@@ -205,8 +199,6 @@ def build(engine: Engine, event_id: str | None = None) -> dict[str, Any]:
             "kind": live.get("kind"), "host": live.get("host"), "port": live.get("port"),
             "rate_hz": live.get("rate_hz"), "serial": live.get("serial")},
         "observations": observations, "causes": causes, "actions": actions,
-        "setup": {"status": setup["status"], "summary": setup["summary"], "proposal": setup["proposal"],
-                  "reasons": setup["reasons"] if setup["status"] == "advice" else []},
         "timeline": [{"t": e["t"], "kind": e["kind"], "severity": e["severity"], "summary": e["summary"]}
                      for e in timeline],
         "charts": charts, "ticket": ticket,
@@ -289,37 +281,18 @@ def _scaled(values: list[float | None], scale: float) -> list[float | None]:
 
 
 def _chart_html(chart: dict[str, Any], unit: str) -> str:
-    display = chart.get("display") if chart["type"] in ("signal", "drift") else None
+    display = chart.get("display")
     scale = float(display["scale"]) if display else 1.0
     shown = display["unit"] if display else unit
     fine = display is not None
-    if chart["type"] == "signal":
-        tol = chart.get("tolerance") or {}
-        band = (tol["low"] * scale, tol["high"] * scale) if tol else None
+    tol = chart.get("tolerance") or {}
+    band = (tol["low"] * scale, tol["high"] * scale) if tol else None
+    if chart.get("type") == "parts":
+        svg = _svg_line(chart["x"], _scaled(chart["v"], scale), band=band, x_label="part number",
+                        y_unit=f"height, {shown}", fine=fine)
+    else:
         svg = _svg_line(chart["t"], _scaled(chart["v"], scale), band=band, marker_x=0.0,
                         x_label="seconds from alert", y_unit=shown, fine=fine)
-    elif chart["type"] == "spectrum":
-        peak = chart.get("peak") or {}
-        svg = _svg_line(chart["freqs"], chart["amps"], x_label="Hz", y_unit=unit)
-        if peak:
-            svg += f'<p class="cap">Strongest frequency: <b>{peak.get("frequency_hz")} Hz</b></p>'
-    else:
-        extra, limit, caption = [], None, ""
-        forecast = chart.get("forecast")
-        word = chart.get("limit_word", "tolerance")
-        if isinstance(forecast, dict) and forecast.get("points"):
-            pts = forecast["points"]
-            extra.append(([p[0] for p in pts], _scaled([p[1] for p in pts], scale), "forecast"))
-            crossing = forecast.get("crossing")
-            if crossing:
-                limit = crossing["value"] * scale
-            if forecast.get("minutes_to_limit") is not None:
-                caption = (f'<p class="cap">Forecast: {word} limit in about '
-                           f'<b>{forecast["minutes_to_limit"]:.0f} minutes</b> (dashed line).</p>')
-        tol = chart.get("tolerance") or {}
-        band = (tol["low"] * scale, tol["high"] * scale) if tol else None
-        svg = _svg_line(chart.get("t_rel") or [], _scaled(chart.get("values") or [], scale), extra=extra,
-                        band=band, hline=limit, x_label="seconds (0 = now)", y_unit=shown, fine=fine) + caption
     return f'<figure><figcaption>{_esc(chart["title"])}</figcaption>{svg}</figure>'
 
 
@@ -356,22 +329,25 @@ pre{white-space:pre-wrap;background:#f5f8fa;border-radius:10px;padding:14px;font
 
 
 FACT_LABELS = {
-    "frequency_hz": ("Frequency", "{v} Hz"),
-    "peak": ("Peak deviation", "{v} {unit}"),
-    "times_normal_noise": ("Compared with normal noise", "{v} times higher"),
-    "rate_per_min": ("Drift rate", "{v} {unit} per minute"),
-    "noise": ("Noise", "{v} {unit}"),
     "invalid_share": ("Invalid readings", "{v}"),
     "invalid_percent": ("Invalid readings", "{v} % of the last second"),
-    "r2": ("Straightness of the trend (R²)", "{v}"),
     "range": ("Measuring range of the sensor", "{v}"),
     "extended_range": ("Extended measuring range", "{v}"),
     "led": ("State LED of the sensor", "{v}"),
     "parts": ("Good parts taught", "{v}"),
+    "part": ("Part number", "{v}"),
+    "stay_s": ("Time under the sensor", "{v} s"),
+    "usual_stay_s": ("Usual time under the sensor", "{v} s"),
+    "gap_s": ("Time since the previous part", "{v} s"),
+    "usual_gap_s": ("Usual time between parts", "{v} s"),
+    "slope_um_per_part": ("Change per part", "{v} µm"),
+    "parts_to_limit": ("Parts until the edge of the band", "about {v}"),
+    "trend_parts": ("Good parts in the trend", "{v}"),
+    "r2": ("How well a straight line fits (R²)", "{v}"),
+    "stacked": ("Two parts on top of each other", "possibly"),
 }
 # values that are positions: shown in the sensor's own unit (millimetres for the optoNCDT)
-POSITION_FACTS = {"value": "Reading", "limit": "Limit crossed", "current": "Reading now",
-                  "tolerance_low": "Lower limit", "tolerance_high": "Upper limit",
+POSITION_FACTS = {"value": "Reading", "limit": "Limit crossed",
                   "reference": "Taught part reads", "half_width": "Allowed deviation (±)",
                   "deviation": "Difference to the taught part", "height": "Height of this part",
                   "reference_height": "Height of the taught part"}
@@ -428,14 +404,11 @@ def render_html(report: dict[str, Any], embed: bool = False) -> str:
     causes = "".join(f"<li>{_esc(c)}</li>" for c in report["causes"])
     actions = "".join(f"<li>{_esc(a)}</li>" for a in report["actions"])
     charts = "".join(_chart_html(c, unit) for c in report["charts"])
+    charts_heading = "Signal" if all(c.get("type") != "parts" for c in report["charts"]) else "Measurements"
     timeline = "".join(
         f"<tr><td>{datetime.fromtimestamp(e['t']).strftime('%H:%M:%S')}</td>"
         f"<td><span class='chip {e['severity']}'>{_esc(e['kind'].replace('_', ' '))}</span>{_esc(e['summary'])}</td></tr>"
         for e in report["timeline"])
-    setup = report["setup"]
-    setup_html = f"<p>{_esc(setup['summary'])}</p>"
-    if setup.get("reasons"):
-        setup_html += "<ul>" + "".join(f"<li>{_esc(r)}</li>" for r in setup["reasons"]) + "</ul>"
     return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_esc(report['title'])}: incident report</title><style>{STYLE}</style></head>
@@ -449,10 +422,9 @@ def render_html(report: dict[str, Any], embed: bool = False) -> str:
 <section><h2>What happened</h2><p class="summary">{_esc(event['summary'])}</p></section>
 <section class="meta">{meta}</section>
 <section><h2>Measured</h2><ul>{facts}</ul>{f'<ul>{obs}</ul>' if obs else ''}</section>
-<section><h2>Signal</h2>{charts}</section>
+<section><h2>{charts_heading}</h2>{charts}</section>
 <section><h2>Likely causes</h2><ul>{causes}</ul></section>
 <section><h2>Recommended next steps</h2><ul>{actions}</ul></section>
-<section><h2>Sensor setup check</h2>{setup_html}</section>
 {_datasheet_html(report.get("datasheet"))}
 <section><h2>Timeline (15 minutes before)</h2><table>{timeline or '<tr><td colspan=2 class=muted>No other alerts.</td></tr>'}</table></section>
 <section><h2>Ticket text</h2><pre id="ticket">{_esc(report['ticket'])}</pre></section>

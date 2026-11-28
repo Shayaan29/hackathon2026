@@ -1,4 +1,4 @@
-// ECharts setup and the option builders for the four chart views.
+// ECharts setup and the option builders for the chart views.
 import { BarChart, BoxplotChart, EffectScatterChart, LineChart, ScatterChart } from "echarts/charts";
 import {
   DataZoomInsideComponent,
@@ -13,10 +13,10 @@ import {
 import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import type {
-  Anchor, BarData, BoxplotData, CockpitEvent, DriftData, HistogramData, HistoryData, InsightStep, RangeData,
-  IncidentChartData, ScatterData, Series, Severity, SpectrumData, Tolerance, ViewData,
+  Anchor, BoxplotData, CockpitEvent, HistogramData, HistoryData, InsightStep, PartCountsData, PartsData, Series,
+  Severity, Tolerance, ViewData,
 } from "../types";
-import { KIND_LABEL, KIND_SHORT, recordingClock, relSeconds } from "./format";
+import { KIND_LABEL, relSeconds } from "./format";
 import { axisFormatter, limitLabel, nearLimit, pos, posUnit, shownOf, type Shown } from "./units";
 
 echarts.use([
@@ -295,10 +295,8 @@ export function historyOption(data: HistoryData): ChartOption {
       nameTextStyle: { color, fontSize: 12, fontWeight: "bold" },
     }));
 
-    // Moments only (a drift is not a moment), and only this sensor's events.
-    const mine = data.events.filter(
-      (e) => e.kind !== "drift" && (e.sensor === s.sensor || e.related_sensors.includes(s.sensor)),
-    );
+    // only this sensor's events
+    const mine = data.events.filter((e) => e.sensor === s.sensor || e.related_sensors.includes(s.sensor));
     const extras: Record<string, unknown> = { markArea: eventAreas(mine, data.t_now, data.window_s) };
     if (near) {
       extras.markLine = {
@@ -322,161 +320,6 @@ export function historyOption(data: HistoryData): ChartOption {
   };
 }
 
-export function spectrumOption(data: SpectrumData): ChartOption {
-  const points = data.freqs.map((f, i) => [f, data.amps[i]]);
-  const peak = data.peak && data.peak.prominence >= 6 ? data.peak : null;
-  const top = Math.max(...(data.amps.filter((a) => a !== null) as number[]), 0.1);
-  return {
-    ...base(data.unit),
-    grid: { left: 70, right: 36, top: 34, bottom: 40 },
-    xAxis: {
-      type: "value",
-      min: 0,
-      max: Math.round((data.freqs[data.freqs.length - 1] as number) ?? 100),
-      name: "Hz",
-      nameTextStyle: { color: COLORS.dim, fontSize: 11 },
-      axisLine: { lineStyle: { color: COLORS.axis } },
-      axisTick: { show: false },
-      splitLine: { show: false },
-      axisLabel: { color: COLORS.dim, fontSize: 11 },
-    },
-    yAxis: valueAxis({
-      min: 0,
-      max: niceRange(0, top * 1.12)[1],
-      name: `amplitude (${data.unit})`,
-      nameTextStyle: { color: COLORS.dim, fontSize: 11, align: "left" },
-    }),
-    series: [
-      {
-        type: "line",
-        name: "Amplitude",
-        data: points,
-        showSymbol: false,
-        smooth: 0.2,
-        lineStyle: glow(peak ? COLORS.cyan : COLORS.violet),
-        itemStyle: { color: COLORS.cyan },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: hexToRgba(COLORS.cyan, 0.35) },
-            { offset: 1, color: hexToRgba(COLORS.cyan, 0.02) },
-          ]),
-        },
-        markPoint: peak
-          ? {
-              symbol: "pin",
-              symbolSize: 56,
-              itemStyle: { color: COLORS.red, shadowBlur: 16, shadowColor: COLORS.red },
-              label: { color: "#fff", fontSize: 11, fontWeight: "bold", formatter: `${Math.round(peak.frequency_hz)} Hz` },
-              data: [{ coord: [peak.frequency_hz, peak.amplitude] }],
-            }
-          : undefined,
-        markLine: peak
-          ? {
-              silent: true,
-              symbol: "none",
-              lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
-              label: { show: false },
-              data: [{ xAxis: peak.frequency_hz }],
-            }
-          : undefined,
-      },
-    ],
-  };
-}
-
-export function driftOption(data: DriftData): ChartOption {
-  const history = data.t_rel.map((t, i) => [t === null ? null : t / 60, data.values[i]]);
-  const forecast = data.forecast?.points.map(([t, v]) => [t / 60, v]) ?? [];
-  const [lo, hi] = extent([...data.values, ...forecast.map((p) => p[1] as number)]);
-  const shown = shownOf(data.unit, data.display, data.limit_word);
-  const crossing = data.forecast?.crossing;
-  const minutes = data.forecast?.minutes_to_limit;
-  // A measuring range is far wider than a drift of a few µm: show its ends only when the target heads for one
-  const limits = !shown.measuring || Boolean(crossing) || nearLimit(data.tolerance, lo, hi, shown);
-  const [yMin, yMax] = limits
-    ? niceRange(Math.min(lo, data.tolerance.low), Math.max(hi, data.tolerance.high))
-    : niceRange(lo, hi);
-  const minX = Math.min(-1, ...history.map((p) => (p[0] as number) ?? 0));
-  const maxX = forecast.length ? Math.max(1, forecast[forecast.length - 1][0] as number) : 1;
-
-  return {
-    ...base(data.unit, shown),
-    grid: { left: 70, right: 36, top: 26, bottom: 40 },
-    xAxis: {
-      type: "value",
-      min: Math.floor(minX),
-      max: Math.ceil(maxX),
-      axisLine: { lineStyle: { color: COLORS.axis } },
-      axisTick: { show: false },
-      splitLine: { show: false },
-      axisLabel: {
-        color: COLORS.dim,
-        fontSize: 11,
-        formatter: (v: number) => (v === 0 ? "now" : `${v > 0 ? "+" : "−"}${Math.abs(v)} min`),
-      },
-    },
-    yAxis: valueAxis({ min: yMin, max: yMax, ...labelsIn(shown, (yMax - yMin) / 5) }),
-    series: [
-      {
-        type: "line",
-        name: "Measured",
-        data: history,
-        showSymbol: false,
-        lineStyle: glow(COLORS.cyan),
-        itemStyle: { color: COLORS.cyan },
-        markLine: {
-          silent: true,
-          symbol: "none",
-          data: [
-            { xAxis: 0, lineStyle: { color: THEME.nowLine, type: "solid", width: 1 }, label: { show: false } },
-            ...(limits ? [
-              { yAxis: data.tolerance.high, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
-                label: { color: COLORS.red, fontSize: 10, position: "insideStartTop",
-                  formatter: limitLabel(data.tolerance.high, shown, "high") } },
-              { yAxis: data.tolerance.low, lineStyle: { color: COLORS.red, type: "dashed", width: 1 },
-                label: { color: COLORS.red, fontSize: 10, position: "insideStartBottom",
-                  formatter: limitLabel(data.tolerance.low, shown, "low") } },
-            ] : []),
-          ],
-        },
-      },
-      {
-        type: "line",
-        name: "Forecast",
-        data: forecast,
-        showSymbol: false,
-        lineStyle: { color: COLORS.amber, width: 2, type: [6, 6], shadowBlur: 8, shadowColor: COLORS.amber },
-        itemStyle: { color: COLORS.amber },
-        markPoint: crossing
-          ? {
-              symbol: "circle",
-              symbolSize: 12,
-              itemStyle: { color: COLORS.red, shadowBlur: 18, shadowColor: COLORS.red },
-              label: {
-                show: true,
-                position: "left",
-                distance: 12,
-                color: COLORS.red,
-                fontSize: 12,
-                fontWeight: "bold",
-                backgroundColor: THEME.labelBg,
-                padding: [3, 7],
-                borderRadius: 4,
-                formatter: `limit in ~${Math.round(minutes ?? crossing.t_rel / 60)} min`,
-              },
-              data: [{ coord: [crossing.t_rel / 60, crossing.value] }],
-            }
-          : undefined,
-      },
-    ],
-  };
-}
-
-
-// ---------------------------------------------------------------------------
-// Charts the copilot picks
-// ---------------------------------------------------------------------------
-
 function plainTooltip(): Record<string, unknown> {
   return {
     trigger: "item",
@@ -488,6 +331,7 @@ function plainTooltip(): Record<string, unknown> {
 
 /** How readings are spread: a stepped area per sensor on a value axis. */
 export function histogramOption(data: HistogramData): ChartOption {
+  const per = data.view === "part_heights" ? "parts" : "readings";
   const unit = data.series[0]?.unit ?? "";
   const shown = shownOf(unit, data.series[0]?.display, data.series[0]?.limit_word);
   const edges = data.series.flatMap((s) => [s.edges[0], s.edges[s.edges.length - 1]]);
@@ -517,7 +361,7 @@ export function histogramOption(data: HistogramData): ChartOption {
     ? { ...plainTooltip(), trigger: "axis", formatter: (params: { seriesName: string; value: [number, number] }[]) => {
         const list = Array.isArray(params) ? params : [params];
         if (!list.length) return "";
-        return `${posUnit(list[0].value[0], shown)}<br/>${list.map((p) => `${p.seriesName}: <b>${p.value[1]}</b> readings`).join("<br/>")}`;
+        return `${posUnit(list[0].value[0], shown)}<br/>${list.map((p) => `${p.seriesName}: <b>${p.value[1]}</b> ${per}`).join("<br/>")}`;
       } }
     : { ...plainTooltip(), trigger: "axis" };
   return {
@@ -527,7 +371,7 @@ export function histogramOption(data: HistogramData): ChartOption {
     grid: { left: 64, right: 26, top: 30, bottom: 38 },
     xAxis: valueAxis({ scale: true, name: shown.unit, nameLocation: "end", nameTextStyle: { color: COLORS.dim },
       splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: COLORS.axis } }, ...labelsIn(shown, step) }),
-    yAxis: valueAxis({ name: "readings", nameTextStyle: { color: COLORS.dim } }),
+    yAxis: valueAxis({ name: per, nameTextStyle: { color: COLORS.dim }, minInterval: 1 }),
     series,
   };
 }
@@ -559,279 +403,96 @@ export function boxplotOption(data: BoxplotData): ChartOption {
   };
 }
 
-export function scatterOption(data: ScatterData): ChartOption {
-  const sx = shownOf(data.x.unit, data.x.display);
-  const sy = shownOf(data.y.unit, data.y.display);
-  const spread = (i: 0 | 1) => {
-    const v = data.points.map((p) => p[i]);
-    return v.length ? (Math.max(...v) - Math.min(...v)) / 5 : undefined;
-  };
-  return {
-    ...base(data.x.unit, sx),
-    tooltip: { show: false },
-    grid: { left: 70, right: 30, top: 24, bottom: 46 },
-    xAxis: valueAxis({ scale: true, name: `${data.x.name} (${sx.unit})`, nameLocation: "middle", nameGap: 28,
-      nameTextStyle: { color: COLORS.text, fontSize: 13 }, ...labelsIn(sx, spread(0)) }),
-    yAxis: valueAxis({ scale: true, name: `${data.y.name} (${sy.unit})`, nameLocation: "middle", nameGap: 48,
-      nameTextStyle: { color: COLORS.text, fontSize: 13 }, ...labelsIn(sy, spread(1)) }),
-    series: [
-      { type: "scatter", name: "readings", data: data.points, symbolSize: 4, large: true,
-        itemStyle: { color: hexToRgba(COLORS.cyan, data.highlight ? 0.22 : 0.38) }, emphasis: { disabled: true } },
-      ...(data.highlight ? [{ type: "scatter", name: "knock", data: data.highlight.points, symbolSize: 5, z: 5,
-        itemStyle: { color: hexToRgba(COLORS.amber, 0.85) }, emphasis: { disabled: true } }] : []),
-    ],
-  };
-}
-
-export function barOption(data: BarData): ChartOption {
-  const digits = data.metric === "events" ? 0 : 2;
-  const shown = shownOf(data.unit, data.display);
-  return {
-    ...base(data.unit, shown),
-    tooltip: { show: false },
-    grid: { left: 64, right: 26, top: 34, bottom: 40 },
-    xAxis: { type: "category", data: data.categories, axisLine: { lineStyle: { color: COLORS.axis } },
-      axisTick: { show: false }, axisLabel: { color: COLORS.text, fontSize: 13 } },
-    yAxis: valueAxis({ name: shown.unit, nameTextStyle: { color: COLORS.dim }, ...labelsIn(shown) }),
-    series: [{
-      type: "bar", name: data.label, barMaxWidth: 90,
-      data: data.values.map((v, i) => ({ value: v, itemStyle: { color: COLORS.series[i % COLORS.series.length],
-        borderRadius: [6, 6, 0, 0] } })),
-      label: { show: true, position: "top", color: COLORS.text, fontFamily: FONT, fontSize: 15, fontWeight: 600,
-        formatter: (p: { value: number }) => (shown.display ? posUnit(p.value, shown)
-          : `${p.value.toFixed(digits)}${data.unit ? ` ${data.unit}` : ""}`) },
-      emphasis: { disabled: true },
-    }],
-  };
-}
-
 function signed(v: number | null | undefined, digits: number): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return "–";
   return `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(digits)}`;
 }
 
 // ---------------------------------------------------------------------------
-// The shift timeline (zoomable from hours down to single readings)
+// The part log: one value per part
 // ---------------------------------------------------------------------------
 
-/** time in ms, average, lowest, highest */
-export type ShiftPoint = [number, number | null, number | null, number | null];
-
-/** The alert lines on the shift timeline; only labels that have room are shown. */
-export function shiftEventMarks(data: RangeData, t0: number, t1: number): Record<string, unknown>[] {
-  const events = [...data.events].sort((a, b) => a.t - b.t);
-  const show = spacedOut(events.map((e) => e.t), t0, t1);
-  return events.map((e, i) => {
-    const color = e.severity === "critical" ? COLORS.red : COLORS.amber;
-    return {
-      xAxis: e.t * 1000,
-      lineStyle: { color, width: 1.2, type: "dashed" },
-      label: { show: show[i], formatter: KIND_SHORT[e.kind] ?? e.kind, color, fontFamily: FONT, fontSize: 11,
-        position: "insideEndTop" },
-      value: e.id,
-    };
-  });
-}
-
-/** Series data for the shift timeline: the line, then the band as low + spread. */
-export function shiftSeriesData(points: ShiftPoint[]): [number, number | null][][] {
-  return [
-    points.map((p) => [p[0], p[1]]),
-    points.map((p) => [p[0], p[2]]),
-    points.map((p) => [p[0], p[2] === null || p[3] === null ? null : p[3] - p[2]]),
+/** The height of every part in the order they came: green dots for the taught part, red for the others. */
+export function partsOption(data: PartsData): ChartOption {
+  const shown = shownOf(data.unit, data.display, "band of the taught part");
+  const heights = data.parts.map((p) => p.height_um);
+  const band = data.band;
+  const all = band ? [...heights, band.low, band.high] : heights;
+  const lo = all.length ? Math.min(...all) : 0;
+  const hi = all.length ? Math.max(...all) : 1;
+  const pad = Math.max((hi - lo) * 0.18, 20);
+  const step = (hi - lo + 2 * pad) / 5;
+  const first = data.parts[0]?.number ?? 0;
+  const last = data.parts[data.parts.length - 1]?.number ?? 1;
+  const dot = (verdict: "good" | "different") => data.parts
+    .filter((p) => p.verdict === verdict)
+    .map((p) => ({ value: [p.number, p.height_um], flags: p.flags, dwell: p.dwell_s }));
+  const series: Record<string, unknown>[] = [
+    {
+      type: "scatter", name: "taught part", data: dot("good"), symbolSize: 9,
+      itemStyle: { color: COLORS.green, borderColor: "rgba(255,255,255,0.85)", borderWidth: 1 },
+      emphasis: { scale: 1.6 },
+      ...(band ? { markArea: {
+        silent: true, animation: false,
+        itemStyle: { color: hexToRgba(COLORS.green, THEME.dark ? 0.12 : 0.09) },
+        label: { show: true, position: "insideTopRight", color: COLORS.green, fontSize: 11, formatter: "taught part" },
+        data: [[{ yAxis: band.low }, { yAxis: band.high }]],
+      } } : {}),
+    },
+    {
+      type: "scatter", name: "different part", data: dot("different"), symbolSize: 11, symbol: "diamond",
+      itemStyle: { color: COLORS.red, borderColor: "rgba(255,255,255,0.85)", borderWidth: 1 },
+      emphasis: { scale: 1.6 },
+    },
   ];
-}
-
-export function shiftOption(data: RangeData, points: ShiftPoint[], window?: [number, number]): ChartOption {
-  const color = COLORS.cyan;
-  const shown = shownOf(data.unit, data.display, data.limit_word);
-  const at = (v: number) => (shown.display ? pos(v, shown) : signed(v, 2));
-  const [line, low, spread] = shiftSeriesData(points);
-  const [w0, w1] = window ?? [data.t0, data.t1];
-  const band = { type: "line", showSymbol: false, silent: true, connectNulls: false, stack: "band",
-    stackStrategy: "all", lineStyle: { opacity: 0 }, emphasis: { disabled: true }, animation: false };
+  if (data.trend && data.trend.clear) {
+    series.push({
+      type: "line", name: `${HIDDEN}trend`, silent: true, showSymbol: false, animation: false,
+      data: [[data.trend.x0, data.trend.y0], [data.trend.x1, data.trend.y1]],
+      lineStyle: { color: COLORS.amber, width: 2, type: "dashed" }, tooltip: { show: false },
+    });
+  }
   return {
     ...base(data.unit, shown),
-    animation: false,
-    tooltip: { ...plainTooltip(), trigger: "axis",
-      formatter: (params: { seriesName: string; value: [number, number | null] }[]) => {
-        const find = (name: string) => params.find((x) => x.seriesName === name)?.value[1] ?? null;
-        const p = params.find((x) => x.seriesName === "reading");
-        const v = find("reading");
-        if (!p || v === null) return "";
-        const d = new Date(p.value[0]);
-        const ms = String(d.getMilliseconds()).padStart(3, "0");
-        const lo = find(`${HIDDEN}low`);
-        const sp = find(`${HIDDEN}spread`);
-        const range = lo !== null && sp !== null && sp > 0.005
-          ? `<br/>lowest ${at(lo)}, highest ${at(lo + sp)}` : "";
-        return `${d.toLocaleTimeString()}.${ms}<br/><b>${at(v)} ${shown.unit}</b>${range}`;
-      } },
-    grid: { left: 64, right: 24, top: 26, bottom: 64 },
-    xAxis: { type: "time", axisLine: { lineStyle: { color: COLORS.axis } }, splitLine: { show: false },
-      axisLabel: { color: COLORS.dim, fontSize: 11, hideOverlap: true } },
-    yAxis: valueAxis({ scale: true, name: shown.unit, nameTextStyle: { color: COLORS.dim }, ...labelsIn(shown) }),
-    dataZoom: [
-      { type: "inside", xAxisIndex: 0, filterMode: "weakFilter", zoomOnMouseWheel: true, moveOnMouseMove: true,
-        minValueSpan: 40 },
-      { type: "slider", xAxisIndex: 0, filterMode: "weakFilter", height: 22, bottom: 10, borderColor: COLORS.axis,
-        fillerColor: hexToRgba(color, 0.15), handleStyle: { color }, moveHandleStyle: { color },
-        dataBackground: { lineStyle: { color: COLORS.dim, width: 0.6 }, areaStyle: { color: hexToRgba(color, 0.08) } },
-        textStyle: { color: COLORS.dim, fontSize: 10 }, labelFormatter: "" },
-    ],
-    series: [
-      {
-        type: "line", name: "reading", data: line, showSymbol: false, connectNulls: false, sampling: undefined, z: 3,
-        lineStyle: { color, width: 1.2 }, itemStyle: { color }, emphasis: { disabled: true },
-        markLine: { silent: false, symbol: "none", data: shiftEventMarks(data, w0, w1), animation: false },
+    tooltip: {
+      ...plainTooltip(),
+      formatter: (p: { seriesName: string; value: [number, number]; data: { flags?: string[]; dwell?: number } }) => {
+        const flags = (p.data?.flags ?? []).filter((f) => f !== "unsteady").map((f) => f.replace("_", " "));
+        return `Part ${p.value[0]}: <b>${posUnit(p.value[1], shown)}</b> high<br/>${p.seriesName}`
+          + `${p.data?.dwell !== undefined ? `, ${p.data.dwell.toFixed(1)} s under the sensor` : ""}`
+          + `${flags.length ? `<br/>${flags.join(", ")}` : ""}`;
       },
-      // thin edges keep a one-slice spike (a knock in the eight-hour view) visible
-      { ...band, name: `${HIDDEN}low`, data: low, lineStyle: { color: hexToRgba(color, 0.5), width: 0.8 } },
-      { ...band, name: `${HIDDEN}spread`, data: spread, lineStyle: { color: hexToRgba(color, 0.5), width: 0.8 },
-        areaStyle: { color: hexToRgba(color, 0.2) } },
-    ],
-  };
-}
-
-// ---------------------------------------------------------------------------
-// One incident: the recording's own time axis, one trace per sensor
-// ---------------------------------------------------------------------------
-
-/**
- * The incident's sensor is drawn first and strongest. The rule window is shaded and
- * the flagged moment marked on every sensor, so the same moment reads across all of them.
- */
-export function incidentOption(data: IncidentChartData): ChartOption {
-  const own = data.series.find((s) => s.sensor === data.sensor) ?? data.series[0];
-  const unit = own?.unit ?? "";
-  const n = Math.max(1, data.series.length);
-  const accent = data.severity === "critical" ? COLORS.red : data.severity === "warning" ? COLORS.amber : COLORS.cyan;
-  const topPct = 5;
-  const bottomPct = 10;
-  const gapPct = 6;
-  const heightPct = (100 - topPct - bottomPct - gapPct * (n - 1)) / n;
-
-  let xMin = Infinity;
-  let xMax = -Infinity;
-  for (const s of data.series) {
-    if (!s.values.length) continue;
-    xMin = Math.min(xMin, s.t0);
-    xMax = Math.max(xMax, s.t0 + (s.values.length - 1) * s.dt);
-  }
-  if (!Number.isFinite(xMin)) {
-    xMin = 0;
-    xMax = 1;
-  }
-  if (xMax <= xMin) xMax = xMin + 1;
-
-  const grids: Record<string, unknown>[] = [];
-  const xAxes: Record<string, unknown>[] = [];
-  const yAxes: Record<string, unknown>[] = [];
-  const series: Record<string, unknown>[] = [];
-
-  data.series.forEach((s, index) => {
-    const isOwn = s.sensor === data.sensor;
-    grids.push(
-      n === 1
-        ? { left: 70, right: 30, top: 34, bottom: 44 }
-        : { left: 70, right: 30, top: `${topPct + index * (heightPct + gapPct)}%`, height: `${heightPct}%` },
-    );
-    xAxes.push({
-      type: "value",
-      gridIndex: index,
-      min: xMin,
-      max: xMax,
-      axisLine: { lineStyle: { color: COLORS.axis } },
-      axisTick: { show: false },
-      splitLine: { show: false },
-      axisLabel: { show: index === n - 1, color: COLORS.dim, fontSize: 11, formatter: (v: number) => recordingClock(v) },
-    });
-
-    const [lo, hi] = extent(s.values);
-    // the tolerance limits appear only when the readings come near them, as in the timeseries view
-    const shown = shownOf(unit);
-    const near = nearLimit(s.tolerance, lo, hi, shown);
-    const [yMin, yMax] = near
-      ? niceRange(Math.min(lo, s.tolerance.low), Math.max(hi, s.tolerance.high))
-      : niceRange(lo, hi);
-    yAxes.push(valueAxis({
-      gridIndex: index,
-      min: yMin,
-      max: yMax,
-      splitNumber: n > 1 ? 3 : 5,
-      name: n > 1 ? s.name : `${s.name} (${unit})`,
-      nameLocation: "middle",
-      nameGap: 48,
-      nameTextStyle: { color: isOwn ? COLORS.cyan : COLORS.dim, fontSize: 12, fontWeight: "bold" },
-    }));
-
-    const lines: Record<string, unknown>[] = [];
-    if (isOwn) {
-      lines.push({
-        xAxis: data.t,
-        lineStyle: { color: accent, type: "dashed", width: 1.4 },
-        label: { show: true, formatter: KIND_LABEL[data.kind], position: "insideEndTop", color: accent,
-          fontSize: 11, fontWeight: 600 },
-      });
-    }
-    if (near) {
-      for (const mark of toleranceMarks(s.tolerance, shown)) {
-        lines.push({ ...mark, lineStyle: { color: COLORS.red, type: "dashed", width: 1, opacity: 0.8 } });
-      }
-    }
-
-    const ruleWindow = [
-      { xAxis: data.highlight.from_s, itemStyle: { color: hexToRgba(accent, isOwn ? 0.16 : 0.07) } },
-      { xAxis: data.highlight.to_s },
-    ];
-    const at = Math.round((data.t - s.t0) / s.dt);
-    const peak = isOwn && at >= 0 && at < s.values.length ? s.values[at] : null;
-
-    series.push({
-      type: "line",
-      name: s.name,
-      xAxisIndex: index,
-      yAxisIndex: index,
-      data: s.values.map((v, i) => [s.t0 + i * s.dt, v]),
-      showSymbol: false,
-      connectNulls: false,
-      sampling: "lttb",
-      lineStyle: isOwn ? glow(COLORS.cyan, 1.6) : { color: COLORS.dim, width: 1.1 },
-      itemStyle: { color: isOwn ? COLORS.cyan : COLORS.dim },
-      emphasis: { disabled: true },
-      markArea: { silent: true, data: [ruleWindow] },
-      markLine: { silent: true, symbol: "none", label: { color: COLORS.red, fontSize: 10 }, data: lines },
-      markPoint: peak === null ? undefined : {
-        symbol: "circle",
-        symbolSize: 12,
-        silent: true,
-        itemStyle: { color: accent, borderColor: "#fff", borderWidth: 2, shadowBlur: 14, shadowColor: accent },
-        data: [{ coord: [data.t, peak] }],
-      },
-    });
-  });
-
-  return {
-    ...base(unit),
-    grid: grids,
-    xAxis: xAxes,
-    yAxis: yAxes,
+    },
+    legend: { top: 0, right: 8, textStyle: { color: COLORS.text },
+      data: ["taught part", "different part"] },
+    grid: { left: 70, right: 26, top: 30, bottom: 40 },
+    xAxis: valueAxis({ name: "part", nameLocation: "end", nameTextStyle: { color: COLORS.dim }, minInterval: 1,
+      min: Math.max(0, first - 1), max: last + 1, splitLine: { show: false },
+      axisLine: { show: true, lineStyle: { color: COLORS.axis } } }),
+    yAxis: valueAxis({ name: `height, ${shown.unit}`, nameTextStyle: { color: COLORS.dim },
+      min: lo - pad, max: hi + pad, ...labelsIn(shown, step) }),
     series,
-    dataZoom: [{
-      type: "inside",
-      xAxisIndex: data.series.map((_, i) => i),
-      filterMode: "none",
-      zoomOnMouseWheel: true,
-      moveOnMouseMove: true,
-      minValueSpan: 0.2,
-    }],
-    axisPointer: n > 1 ? { link: [{ xAxisIndex: "all" }] } : undefined,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Annotations: what the copilot points at while it explains a chart
-// ---------------------------------------------------------------------------
+/** Good and different parts per period, stacked. */
+export function partCountsOption(data: PartCountsData): ChartOption {
+  return {
+    ...base("parts"),
+    tooltip: { ...plainTooltip(), trigger: "axis", axisPointer: { type: "shadow" } },
+    legend: { top: 0, right: 8, textStyle: { color: COLORS.text } },
+    grid: { left: 52, right: 26, top: 30, bottom: 40 },
+    xAxis: { type: "category", data: data.categories, axisLine: { lineStyle: { color: COLORS.axis } },
+      axisTick: { show: false }, axisLabel: { color: COLORS.dim, fontSize: 12 } },
+    yAxis: valueAxis({ name: "parts", nameTextStyle: { color: COLORS.dim }, minInterval: 1 }),
+    series: [
+      { type: "bar", name: "taught part", stack: "parts", data: data.good, barMaxWidth: 46,
+        itemStyle: { color: COLORS.green, borderRadius: [0, 0, 0, 0] }, emphasis: { focus: "series" } },
+      { type: "bar", name: "different part", stack: "parts", data: data.different, barMaxWidth: 46,
+        itemStyle: { color: COLORS.red, borderRadius: [3, 3, 0, 0] }, emphasis: { focus: "series" } },
+    ],
+  };
+}
 
 type Mark = Record<string, unknown>;
 
@@ -848,20 +509,15 @@ function stepLabel(n: number, text: string | undefined, active: boolean): Record
   };
 }
 
-/** Which grid an anchor belongs to (compare charts stack one grid per sensor). */
-function gridsFor(view: ViewData, anchor: Anchor): number[] {
-  if (view.view !== "compare" && view.view !== "incident") return [0];
-  const ids = view.view === "incident"
-    ? (view as IncidentChartData).series.map((s) => s.sensor)
-    : (view as HistoryData).series.map((s) => s.sensor);
-  if (anchor.sensor && ids.includes(anchor.sensor)) return [ids.indexOf(anchor.sensor)];
-  return ids.map((_, i) => i);
+/** Which grid an anchor belongs to: every chart has one. */
+function gridsFor(_view: ViewData, _anchor: Anchor): number[] {
+  return [0];
 }
 
 /** Anchor x in the chart's own units. */
 function xOf(view: ViewData, anchor: Anchor, key: "t" | "t0" | "t1" = "t"): number | undefined {
   const xKey = key === "t" ? "x" : key === "t0" ? "x0" : "x1";
-  if (anchor[key] !== undefined && "t_now" in view && (view.view === "timeseries" || view.view === "compare")) {
+  if (anchor[key] !== undefined && "t_now" in view && view.view === "timeseries") {
     return (anchor[key] as number) - (view as HistoryData).t_now;
   }
   return anchor[xKey] ?? (anchor[key] as number | undefined);
@@ -871,21 +527,15 @@ function xOf(view: ViewData, anchor: Anchor, key: "t" | "t0" | "t1" = "t"): numb
 function xRange(view: ViewData): [number, number] | null {
   switch (view.view) {
     case "timeseries":
-    case "compare":
       return [-(view as HistoryData).window_s, 0];
-    case "histogram": {
+    case "histogram":
+    case "part_heights": {
       const edges = (view as HistogramData).series.flatMap((s) => [s.edges[0], s.edges[s.edges.length - 1]]);
       return edges.length ? [Math.min(...edges), Math.max(...edges)] : null;
     }
-    case "incident": {
-      const ends = (view as IncidentChartData).series
-        .filter((s) => s.values.length > 0)
-        .flatMap((s) => [s.t0, s.t0 + (s.values.length - 1) * s.dt]);
-      return ends.length ? [Math.min(...ends), Math.max(...ends)] : null;
-    }
-    case "spectrum": {
-      const f = (view as SpectrumData).freqs.filter((v): v is number => v !== null);
-      return f.length ? [f[0], f[f.length - 1]] : null;
+    case "parts": {
+      const parts = (view as PartsData).parts;
+      return parts.length ? [Math.max(0, parts[0].number - 1), parts[parts.length - 1].number + 1] : null;
     }
     default:
       return null;
@@ -907,8 +557,8 @@ export function withAnnotations(option: ChartOption, view: ViewData, steps: Insi
     if (!perGrid.has(g)) perGrid.set(g, { lines: [], areas: [], points: [] });
     return perGrid.get(g)!;
   };
-  const categories: string[] = view.view === "boxplot" || view.view === "bar"
-    ? (view as BoxplotData | BarData).categories : [];
+  const categories: string[] = view.view === "boxplot" ? (view as BoxplotData).categories
+    : view.view === "part_counts" ? (view as PartCountsData).categories : [];
 
   steps.forEach((step, i) => {
     const a = step.anchor;

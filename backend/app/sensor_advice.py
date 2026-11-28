@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .config import SensorConfig
-from .sensor_specs import DS_PAGE, PAGE, WARMUP_MIN, SensorSpec, main_reason, reasons_text
+from .sensor_specs import DS_PAGE, PAGE, SensorSpec, main_reason, reasons_text
 
 
 def _pages(label: str, pages: list[int]) -> str:
@@ -31,89 +31,6 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _vibration(spec: SensorSpec, n: dict[str, Any], related: list[str]) -> tuple[list[str], list[str]]:
-    freq, peak = _number(n.get("frequency_hz")), _number(n.get("peak"))
-    causes = []
-    if related:
-        causes.append(f"The same vibration reached {len(related) + 1} sensors at the same moment, so it most "
-                      "likely came through the shared fixture, not from one sensor.")
-    where = f" at {freq:g} Hz ({freq * 60:.0f} per minute)" if freq else ""
-    causes.append(f"Motion between the sensor and the target{where}, for example an impact, a nearby machine or a "
-                  f"loose clamp. In the µm range the manual asks for a stable or vibration-damped mounting of "
-                  f"sensor and target {cite('vibration')}.")
-    if peak is not None and peak > spec.linearity_um:
-        causes.append(f"The peak of {peak:.1f} µm is {peak / spec.linearity_um:.0f} times the data sheet linearity "
-                      f"of ±{spec.linearity_um:g} µm {cite('linearity')}, so it is much more than the sensor's own "
-                      "error: the motion is most likely in the setup.")
-    causes.append("Resonance of the sensor holder, which rings at its own frequency after a knock.")
-    actions = [
-        "Check both mounting points of the sensor (2 × M4 direct or M3 screws, with the centering sleeves) and the "
-        f"stiffness of the holder {cite('general')}.",
-        f"Look for machines or drives running near {freq:g} Hz." if freq
-        else "Look for nearby machines or drives that could excite the fixture.",
-        "Check that the target is fixed and does not move with the process.",
-        "If it repeats, damp or decouple the holder, or pause measuring while it rings.",
-    ]
-    return causes, actions
-
-
-def _noise(spec: SensorSpec) -> tuple[list[str], list[str]]:
-    causes = [
-        "A dark or shiny target: the sensor evaluates the diffuse part of the reflection and needs a longer "
-        f"exposure on such surfaces, and the longest exposure is tied to the measuring rate {cite('reflectance')}.",
-        "Translucent or changing material: laser light that penetrates the surface changes the apparent spot size "
-        f"and adds measuring uncertainty {cite('reflectance')}.",
-        f"A rough or structured surface: roughness of about 5 µm and more shows up as an apparent change of "
-        f"distance when the target moves {cite('roughness')}.",
-        f"Ambient light on a shiny target, mainly at a reduced measuring rate or near welding equipment "
-        f"{cite('ambient')}.",
-        "Little averaging in the sensor: the data sheet linearity is given with median 9 + moving average 4096 "
-        f"{cite('linearity')}, while the quick setting dynamic is median 9 only {cite('presets')}.",
-    ]
-    actions = [
-        f"Clean the optical windows of the sensor and do not touch them; dirt impairs the function {cite('optics')}.",
-        "On the sensor's web page (Home > Signal quality) choose a calmer setting: static is median 9 + moving "
-        f"average 128, balanced is 64 {cite('presets')}. A moving average can go up to 4096 {cite('averaging')}.",
-        "Pick the preset that fits the surface: Standard for ceramics and metals, Multi-surface for PCBs and "
-        f"hybrid materials, Light penetration for plastics such as Teflon or POM {cite('surfaces')}.",
-        f"Shield the measurement from ambient light or switch on background suppression {cite('ambient')}.",
-        f"Let the sensor warm up for at least {WARMUP_MIN} minutes before judging µm-level noise {cite('warmup')}.",
-    ]
-    return causes, actions
-
-
-def _drift(spec: SensorSpec, n: dict[str, Any], forecast_min: float | None) -> tuple[list[str], list[str]]:
-    rate = _number(n.get("rate_per_min"))
-    per_k = spec.temperature_um_per_k
-    temperature = (f"Temperature of the sensor: the data sheet allows up to ±{spec.temperature_pct_fso_per_k:g} % "
-                   f"FSO per K, that is {per_k:.2f} µm per K on a metal holder between 20 and 50 °C "
-                   f"{cite('temperature')}.")
-    if rate is not None and per_k > 0:
-        kelvin = abs(rate) / per_k
-        if kelvin >= 1.0:
-            temperature += (f" The measured drift of {abs(rate):.1f} µm per minute would need the sensor to change "
-                            f"by about {kelvin:.1f} K every minute, which is a lot for the sensor body, so the "
-                            "holder, the target or the setup is the more likely source.")
-        else:
-            temperature += (f" A temperature change of about {kelvin:.1f} K per minute would be enough to explain "
-                            f"the measured {abs(rate):.1f} µm per minute.")
-    causes = [
-        temperature,
-        f"Warm-up: the manual asks for at least {WARMUP_MIN} minutes after switching on {cite('warmup')}.",
-        "Thermal expansion of the holder or the target. Steel grows about 12 µm per metre and degree Celsius.",
-        "Slow mechanical creep of the mounting, or wear on the measured surface.",
-    ]
-    actions = [
-        "Check the temperature of the sensor, the holder and the target against the start of the shift. The "
-        f"temperature specification holds on a metallic holder with good heat dissipation {cite('temperature')}.",
-        f"Make sure the sensor has been switched on for at least {WARMUP_MIN} minutes {cite('warmup')}.",
-        "Measure a reference part to tell part drift from setup drift.",
-        (f"Check the reference within {forecast_min:.0f} minutes, before the reading leaves the measuring range."
-         if forecast_min else "Check the reference, then watch whether the trend returns."),
-    ]
-    return causes, actions
 
 
 def _out_of_range(spec: SensorSpec, n: dict[str, Any], cfg: SensorConfig) -> tuple[list[str], list[str]]:
@@ -201,12 +118,6 @@ def causes_and_actions(event: dict[str, Any], cfg: SensorConfig,
     if spec is None:
         return None
     kind, numbers = event["kind"], event.get("numbers", {})
-    if kind == "vibration":
-        return _vibration(spec, numbers, related)
-    if kind == "noise":
-        return _noise(spec)
-    if kind == "drift":
-        return _drift(spec, numbers, event.get("forecast_min"))
     if kind == "out_of_range" and cfg.tolerance_kind == "measuring_range":
         return _out_of_range(spec, numbers, cfg)
     if kind == "invalid":

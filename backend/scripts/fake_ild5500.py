@@ -6,15 +6,17 @@ hotel, or to see what the cockpit does when something goes wrong.
 
     python scripts/fake_ild5500.py                  # port 1024, 20 kHz, a quiet target
     python scripts/fake_ild5500.py --port 5000 --rate 4000
-    python scripts/fake_ild5500.py --scenario vibration    # the target starts to shake after 10 s
-    python scripts/fake_ild5500.py --scenario vibration --after 30   # ... after 30 s (the cockpit learns "normal" first)
     python scripts/fake_ild5500.py --scenario no-target    # the sensor sees nothing (status code "no peak")
-    python scripts/fake_ild5500.py --scenario drift        # the target slowly moves away
     python scripts/fake_ild5500.py --scenario extended     # the target moves out of the measuring range, but
                                                            # stays inside the extended range (the LED would flash)
     python scripts/fake_ild5500.py --scenario out-of-range # the sensor reports "target beyond the range"
     python scripts/fake_ild5500.py --scenario parts --after 40   # part check: a good part (3.0 mm) lies under the
                                                            # sensor; from second 40 other things come and go
+    python scripts/fake_ild5500.py --scenario line --after 15    # quality station: the empty plate (8 mm) until
+                                                           # second 15, then part after part, 6 mm high; part 1
+                                                           # rests 8 s so it can be taught. Every 23rd part is a
+                                                           # foreign one, the parts slowly get lower, one part
+                                                           # follows almost at once, one stays 14 s (a jam)
 
 Distances are what DIST1 is: millimetres counted from the start of the measuring range (0 to 10 for an
 ILD5500-10, the middle is 5), so the cockpit shows the same numbers as the sensor's web page.
@@ -30,7 +32,6 @@ from __future__ import annotations
 import argparse
 import math
 import socket
-import struct
 import sys
 import time
 from pathlib import Path
@@ -41,7 +42,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.sources.ild5500 import HEADER, PREAMBLE, SIGNAL_ORDER  # noqa: E402
 
-SCENARIOS = ("quiet", "vibration", "drift", "extended", "parts", "no-target", "out-of-range")
+SCENARIOS = ("quiet", "extended", "parts", "line", "no-target", "out-of-range")
+PLATE_MM, GOOD_MM, FOREIGN_MM = 8.0, 2.0, 3.5
+_LINE: dict[float, tuple[np.ndarray, np.ndarray]] = {}
+
+
+def line_marks(after: float) -> tuple[np.ndarray, np.ndarray]:
+    """The schedule of the line scenario: times and the distance the sensor sees, every change a 0.2 s slide."""
+    if after in _LINE:
+        return _LINE[after]
+    marks, levels = [0.0], [PLATE_MM]
+    now = after
+
+    def hold(level: float, seconds: float, slide: float = 0.2) -> None:
+        nonlocal now
+        marks.extend([now, now + slide])
+        levels.extend([levels[-1], level])
+        now += slide + seconds
+
+    hold(GOOD_MM, 8.0)                                   # part 1 rests long enough to be taught
+    for k in range(2, 600):
+        level = FOREIGN_MM if k % 23 == 7 else GOOD_MM + 0.004 * k     # 4 µm lower with every part
+        hold(PLATE_MM, 0.25 if k % 37 == 12 else 1.0)                  # one part follows almost at once
+        hold(level, 14.0 if k % 41 == 18 else 2.0)                     # one part stays: a jam
+    marks.append(now)
+    levels.append(levels[-1])
+    _LINE[after] = (np.array(marks), np.array(levels))
+    return _LINE[after]
 NO_PEAK = 0x7FFFFF04
 AFTER_RANGE = 0x7FFFFF06
 
@@ -50,13 +77,8 @@ def distance_mm(t: np.ndarray, scenario: str, mid_mm: float, noise_um: float, rn
                 after: float = 10.0) -> np.ndarray:
     """What the sensor would measure at the times t (seconds since the client connected)."""
     mm = mid_mm + rng.normal(0.0, noise_um / 1000.0, t.size)
-    mm += 0.002 * np.sin(2 * math.pi * 0.14 * t)              # the part turning, a little runout
-    if scenario == "vibration":
-        shaking = np.clip((t - after) / 0.5, 0.0, 1.0) * (t < after + 12.0)
-        mm += shaking * 0.012 * np.sin(2 * math.pi * 48.0 * t)
-    elif scenario == "drift":
-        mm += np.clip(t - after, 0.0, None) * (6.0 / 60.0) / 1000.0     # 6 µm per minute
-    elif scenario == "extended":
+    mm += 0.002 * np.sin(2 * math.pi * 0.14 * t)              # a little slow wander, as on a real table
+    if scenario == "extended":
         mm += np.clip((t - after) / 3.0, 0.0, 1.0) * 6.5                # 3 s to 6.5 mm further away: 11.5 mm
     elif scenario == "parts":
         # the good part (3.0 mm), then a foreign part at 4.2 mm, the good part again, the empty plate at 9.0 mm,
@@ -64,6 +86,9 @@ def distance_mm(t: np.ndarray, scenario: str, mid_mm: float, noise_um: float, rn
         marks = [0, after, after + 0.4, after + 6, after + 6.4, after + 12, after + 12.4, after + 18, after + 18.4,
                  after + 24, after + 24.4]
         levels = [3.0, 3.0, 4.2, 4.2, 3.0, 3.0, 9.0, 9.0, 2.1, 2.1, 3.0]
+        mm = np.interp(t, marks, levels) + (mm - mid_mm)
+    elif scenario == "line":
+        marks, levels = line_marks(after)
         mm = np.interp(t, marks, levels) + (mm - mid_mm)
     return mm
 

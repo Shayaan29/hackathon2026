@@ -87,8 +87,11 @@ function Item({ item, assistant }: { item: FeedItem; assistant: string }) {
           <div className="feed-actions">
             <button onClick={() => controller.showForEvent(e)}>Show chart</button>
             <button onClick={() => void api.createReport(e.id)}>Write report</button>
-            {(e.kind === "noise" || e.kind === "invalid") && (
-              <button onClick={() => controller.openAssistant(e.sensor)}>Check setup</button>
+            {e.kind === "wrong_part" && (
+              <button onClick={() => controller.openPartCheck(e.sensor)}>Part check</button>
+            )}
+            {(e.kind === "jam" || e.kind === "double_feed" || e.kind === "trend" || e.kind === "wrong_part") && (
+              <button onClick={() => controller.openParts(e.sensor)}>Part log</button>
             )}
           </div>
         </li>
@@ -103,34 +106,12 @@ function Item({ item, assistant }: { item: FeedItem; assistant: string }) {
             : <p>{item.text}{!item.final && <span className="caret" />}</p>}
         </li>
       );
-    case "shake":
-      return (
-        <li className="feed-note feed-shake">
-          <Icon name="phone" size={16} />
-          <p><strong>{item.name}</strong> knocked the machine from their phone. Watching what the sensors make of it.</p>
-        </li>
-      );
-    case "setting":
-      return (
-        <li className="feed-note">
-          <Icon name="sliders" size={16} />
-          <p>{item.text}</p>
-        </li>
-      );
     case "report":
       return (
         <li className="feed-note feed-report">
           <Icon name="doc" size={16} />
           <p>Report ready: {item.title}</p>
           <button onClick={() => controller.openReport(item.reportId)}>Open</button>
-        </li>
-      );
-    case "setup":
-      return (
-        <li className="feed-note feed-setup">
-          <Icon name="sliders" size={16} />
-          <p>{item.text}</p>
-          <button onClick={() => controller.openAssistant(item.sensor)}>Check setup</button>
         </li>
       );
   }
@@ -142,7 +123,6 @@ export function Copilot() {
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceError = useStore((s) => s.voiceError);
   const activity = useStore((s) => s.activity);
-  const pending = useStore((s) => s.pending);
   const speakAlerts = useStore((s) => s.speakAlerts);
   const patch = useStore((s) => s.patch);
   const [text, setText] = useState("");
@@ -202,14 +182,6 @@ export function Copilot() {
         )}
         {feed.map((item) => <Item key={item.id} item={item} assistant={assistant} />)}
       </ol>
-
-      {pending && (
-        <div className="confirm">
-          <span>Set {pending.name.replace(/_/g, " ")} on {controller.sensorName(pending.sensor)} to {pending.value}?</span>
-          <button className="solid-btn" onClick={() => void controller.handleLocal("yes")}>Yes, change it</button>
-          <button className="quiet-btn" onClick={() => void controller.handleLocal("no")}>No</button>
-        </div>
-      )}
 
       <form className="composer" onSubmit={submit}>
         <button type="button" className={`talk ${holding ? "is-on" : ""}`}

@@ -2,7 +2,7 @@
 
 It reads the same folder as the manual list (``backend/data/knowledge``, see
 knowledge.py), so a manual added or removed under Manuals is picked up on the
-next question. knowledge.py keeps serving the incident recommendations; this
+next question. knowledge.py keeps the manual list and its keyword search; this
 module answers the operator's questions in the Manuals panel, the chat and the
 voice tool search_manual.
 

@@ -8,14 +8,11 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview",
-    "postinstall": "node scripts/copy-mediapipe.mjs",
-    "fetch:gestures": "node scripts/fetch-gesture-model.mjs"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans": "^5.3.0",
     "@fontsource/ibm-plex-sans-condensed": "^5.3.0",
-    "@mediapipe/tasks-vision": "^1.2.3",
     "@types/three": "^0.187.0",
     "echarts": "^6.1.0",
     "qrcode-generator": "^2.0.4",

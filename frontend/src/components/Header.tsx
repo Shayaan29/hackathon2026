@@ -25,7 +25,6 @@ function Health() {
     const st = status?.sensors[s.id];
     return st && st.state !== "ok" ? [{ name: s.name, state: st.state, kinds: st.active }] : [];
   });
-  const fallback = sensors.some((s) => status?.sensors[s.id]?.source.fallback);
   // a real sensor that is not delivering good readings matters more than any alert
   const notLive = sensors.flatMap((s) => {
     const live = status?.sensors[s.id]?.live;
@@ -47,7 +46,7 @@ function Health() {
     return (
       <div className="health health-ok"><span />
         {okText}
-        {fallback ? " (simulated data)" : isLive ? " (live data)" : ""}
+        {isLive ? " (live data)" : ""}
       </div>
     );
   }
@@ -65,11 +64,8 @@ export function Header() {
   const config = useStore((s) => s.config);
   const mission = useStore((s) => s.mission);
   const soundOn = useStore((s) => s.soundOn);
-  const gesturesOn = useStore((s) => s.gesturesOn);
   const phones = useStore((s) => s.status?.clients.phone ?? 0);
   const tokenOk = useStore((s) => s.tokenOk);
-  const recordingOn = useStore((s) => Boolean(s.status?.recording?.active));
-  const incidentCount = useStore((s) => (s.status?.recording?.active ? s.status.recording.incidents : 0));
   const manualCount = useStore((s) => s.knowledge?.documents.length ?? 0);
   const patch = useStore((s) => s.patch);
   const time = useClock();
@@ -90,33 +86,19 @@ export function Header() {
       <Health />
       <nav className="header-actions">
         {config?.token_required && tokenOk === false && (
-          <button className="tool tool-warn" onClick={() => void controller.enterToken()} title="Unlock demo controls">
+          <button className="tool tool-warn" onClick={() => void controller.enterToken()} title="Unlock teaching parts and the AI voice">
             <Icon name="lock" /><span>Unlock</span>
           </button>
         )}
-        <button className={`tool ${recordingOn ? "is-on" : ""}`} onClick={() => patch({ recordingOpen: true })}
-                title="Load a recording file">
-          <Icon name="doc" /><span>{recordingOn ? "Recording" : "Load file"}</span>
-        </button>
         <button className={`tool ${manualCount ? "is-on" : ""}`} onClick={() => patch({ manualsOpen: true })}
                 title="Manuals the AI reads">
           <Icon name="book" /><span>{manualCount ? `Manuals (${manualCount})` : "Manuals"}</span>
         </button>
-        <button className={`tool ${incidentCount ? "is-on" : ""}`}
-                onClick={() => patch({ incidentsOpen: !useStore.getState().incidentsOpen })} title="Incidents (I)">
-          <Icon name="bolt" /><span>{incidentCount ? `Incidents (${incidentCount})` : "Incidents"}</span>
-        </button>
         <button className="tool" onClick={() => patch({ qrOpen: true })} title="Phones (Q)">
           <Icon name="phone" /><span>{phones ? `${phones} phone${phones === 1 ? "" : "s"}` : "Phones"}</span>
         </button>
-        <button className={`tool ${gesturesOn ? "is-on" : ""}`} onClick={() => patch({ gesturesOn: !gesturesOn })} title="Hand gestures">
-          <Icon name="hand" />
-        </button>
         <button className={`tool ${soundOn ? "" : "is-off"}`} onClick={() => controller.toggleSound()} title="Voice on or off (M)">
           <Icon name={soundOn ? "speaker" : "mute"} />
-        </button>
-        <button className="tool" onClick={() => patch({ demoOpen: !useStore.getState().demoOpen })} title="Demo controls (D)">
-          <Icon name="play" />
         </button>
         <button className={`mission-btn ${mission ? "is-on" : ""}`} onClick={() => controller.toggleMission()} title="Mission mode (J)">
           <Icon name="mission" />

@@ -1,4 +1,4 @@
-// The 3D digital twin with measurement callouts that follow each sensor.
+// The 3D digital twin with measurement callouts that follow each sensor, and the part under it.
 import { useEffect, useRef, useState } from "react";
 import { pos, shownFor } from "../lib/units";
 import { series } from "../lib/live";
@@ -16,24 +16,13 @@ function sensorState(id: string): TwinState {
   return status.state;
 }
 
-/** The part turns at the loaded recording's speed when that speed is known, otherwise at the configured one. */
-function turnSpeed(): number {
-  const state = get();
-  const recording = state.status?.recording;
-  const rpm = recording?.active && recording.source?.part_rpm ? recording.source.part_rpm : state.config?.part_rpm ?? 8.6;
-  return (2 * Math.PI * rpm) / 60;
-}
-
 export function TwinView() {
   const config = useStore((s) => s.config);
-  const spot = useStore((s) => s.spot);
   const hostRef = useRef<HTMLDivElement>(null);
   const labelRefs = useRef(new Map<string, HTMLDivElement>());
   const valueRefs = useRef(new Map<string, HTMLSpanElement>());
-  const spotRef = useRef<HTMLDivElement>(null);
   const twinRef = useRef<Twin | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const [shake, setShake] = useState<{ key: number; name: string } | null>(null);
   const sensorKey = config?.sensors.map((s) => s.id).join(",") ?? "";
 
   useEffect(() => {
@@ -46,21 +35,24 @@ export function TwinView() {
       if (disposed) return;
       try {
         const twin = new Twin(host, config.sensors.map((s, i) => ({
-          id: s.id, range: Math.max((s.tolerance.high - s.tolerance.low) / 2, 1e-6), nominal: s.nominal,
+          id: s.id, low: s.tolerance.low, high: s.tolerance.high,
+          extLow: s.spec?.zones_um.ext_low, extHigh: s.spec?.zones_um.ext_high,
           model: s.model, ...trackFor(i, config.sensors.length),
         })), {
           forEachSince: (id, tMin, fn) => series(id).forEachSince(tMin, fn),
           now: serverNow,
           value: (id) => {
             const latest = series(id).latest();
-            const nominal = get().config?.sensors.find((s) => s.id === id)?.nominal ?? 0;
-            return latest && Number.isFinite(latest.v) ? latest.v - nominal : null;
+            return latest && Number.isFinite(latest.v) ? latest.v : null;
           },
           state: sensorState,
-        }, turnSpeed());
+          part: (id) => {
+            const part = get().status?.sensors[id]?.part;
+            return part?.supported ? { state: part.state, emptyUm: part.empty_um } : null;
+          },
+        });
         twinRef.current = twin;
         twin.setMission(get().mission);
-        twin.setSpot(get().spot);
       } catch (error) {
         setFailed(error instanceof Error ? error.message : String(error));
         return;
@@ -76,12 +68,6 @@ export function TwinView() {
               el.style.opacity = p.visible ? "1" : "0";
               el.dataset.state = sensorState(p.id);
             }
-          }
-          const at = twin.spotPosition();
-          const spotEl = spotRef.current;
-          if (spotEl) {
-            spotEl.style.transform = at ? `translate(${at.x.toFixed(1)}px, ${at.y.toFixed(1)}px)` : "";
-            spotEl.style.opacity = at?.visible ? "1" : "0";
           }
           if (now - lastText > 100) {
             lastText = now;
@@ -106,30 +92,10 @@ export function TwinView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sensorKey]);
 
-  // mission mode, knocks from vibration alerts and judges' shakes
-  useEffect(() => {
-    let lastEvents = get().events.length;
-    let lastShakeT = get().lastShake?.t ?? 0;
-    return useStore.subscribe((s, prev) => {
-      if (s.mission !== prev.mission) twinRef.current?.setMission(s.mission);
-      if (s.spot !== prev.spot) twinRef.current?.setSpot(s.spot);
-      if (s.status?.recording !== prev.status?.recording) twinRef.current?.setOmega(turnSpeed());
-      if (s.events.length > lastEvents) {
-        for (const event of s.events.slice(lastEvents)) {
-          if (event.kind === "vibration") {
-            const peak = Number(event.numbers.peak ?? 15);
-            twinRef.current?.knock(Math.min(Math.max(peak / 15, 0.6), 2.5));
-          }
-        }
-      }
-      lastEvents = s.events.length;
-      if (s.lastShake && s.lastShake.t !== lastShakeT) {
-        lastShakeT = s.lastShake.t;
-        twinRef.current?.knock(1 + s.lastShake.intensity * 0.6);
-        setShake({ key: s.lastShake.t, name: s.lastShake.name });
-      }
-    });
-  }, []);
+  // mission mode
+  useEffect(() => useStore.subscribe((s, prev) => {
+    if (s.mission !== prev.mission) twinRef.current?.setMission(s.mission);
+  }), []);
 
   return (
     <div className="twin">
@@ -140,16 +106,8 @@ export function TwinView() {
           <p className="muted">{failed}</p>
         </div>
       )}
-      {!failed && spot?.partRpm && (
-        <div className="twin-spot" ref={spotRef} data-severity={spot.severity}>
-          <strong>{spot.incidentId}</strong> measured here
-        </div>
-      )}
-      {!failed && spot && !spot.partRpm && (
-        <div className="twin-spot-note">{spot.incidentId}: enter the part speed to place this spot on the part</div>
-      )}
       {!failed && config?.sensors.map((sensor, i) => (
-        <div key={sensor.id} className={`callout ${spot?.sensor === sensor.id ? "is-spot" : ""}`} data-state="ok"
+        <div key={sensor.id} className="callout" data-state="ok"
              data-side={i < config.sensors.length / 2 && config.sensors.length > 1 ? "left" : "right"}
              ref={(el) => { if (el) labelRefs.current.set(sensor.id, el); else labelRefs.current.delete(sensor.id); }}>
           <span className="callout-dot" />
@@ -163,11 +121,6 @@ export function TwinView() {
           </span>
         </div>
       ))}
-      {shake && (
-        <div className="shake-note" key={shake.key} onAnimationEnd={() => setShake(null)}>
-          <strong>{shake.name}</strong> knocked the machine
-        </div>
-      )}
       <div className="twin-hint">Drag to look around</div>
     </div>
   );

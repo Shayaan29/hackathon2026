@@ -16,8 +16,6 @@ backend/data/knowledge/*
 # Node / build output
 frontend/node_modules/
 frontend/dist/
-frontend/public/mediapipe/
-frontend/public/models/
 
 # OS / editor
 .DS_Store
@@ -25,5 +23,10 @@ Thumbs.db
 .vscode/
 .idea/
 
-# the part taught in the Part check (written by the cockpit on the laptop)
+# the part taught in the Part check and the part log of the quality station (written by the cockpit on the laptop)
 backend/data/part_reference.json
+backend/data/part_log.jsonl
+
+# left over on older checkouts from the removed hand gestures (MediaPipe); safe to delete
+frontend/public/mediapipe/
+frontend/public/models/

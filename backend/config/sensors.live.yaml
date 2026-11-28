@@ -1,15 +1,15 @@
 # =============================================================================
 #  KI Sensor Cockpit: the real optoNCDT 5500 (ILD5500) over Ethernet
 # -----------------------------------------------------------------------------
-#  Use it with   SENSORS_FILE=config/sensors.live.yaml   in backend/.env
+#  This is the cockpit's sensor file (SENSORS_FILE in backend/.env points here).
 #
 #  Everything marked REPLACE is yours to set at the sensor.
 #
 #  The readings are the distance DIST1 exactly as the sensor reports it: in
 #  millimetres from the start of its measuring range (0 mm = start, 10 mm = end
 #  for an ILD5500-10), the same number as on the sensor's web page. Inside, the
-#  cockpit calculates in micrometres (µm) so that noise and vibration of a few
-#  µm stay visible; screens, alerts and reports show positions in mm.
+#  cockpit calculates in micrometres (µm) so that differences of a few µm stay
+#  visible; screens, alerts and reports show positions in mm.
 #
 #  The model decides the rest: its measuring range, extended range, linearity,
 #  temperature stability, light spot and LED states come from the operating
@@ -29,7 +29,6 @@ engine:
   analysis_rate_hz: 500             # the sensor's 20 kHz are averaged down to this
   fast_buffer_s: 600
   slow_buffer_s: 28800
-  part_rpm: 0                       # REPLACE: how fast the measured part turns (0 if it does not turn)
 
 sensors:
   - id: s1
@@ -43,7 +42,6 @@ sensors:
     #                     measuring range (add  display: mm  below to keep the readings in millimetres)
     tolerance: measuring_range
     nominal: auto                   # auto = the middle of the measuring range; or a number in µm
-    fixture: "fixture-a"
     source:
       type: ild5500
       # Where the sensor listens. Factory address of the optoNCDT 5500: 169.254.168.150. If yours is different,
@@ -61,12 +59,19 @@ sensors:
                                         # (add INTENSITY and TEMPERATURE to see them in the cockpit)
       invert: false                     # true: a target moving away counts as negative (not with measuring_range)
     # No "settings" here: the sensor's own settings are changed in its web page, not from the cockpit.
+    #
+    # Plug and play with MEDAQLib (Windows, not yet tried on the real sensor): replace the whole "source:" block
+    # above with the one below. MEDAQLib's sensor finder then looks for a Micro-Epsilon sensor on Ethernet, USB
+    # and the serial ports, and the sensor tile shows which one it found. Set "model:" above to that sensor.
+    #
+    # source:
+    #   type: medaqlib
+    #   dll_path: "C:/MEDAQLib/Release-x64/MEDAQLib.dll"   # the 64-bit DLL from the MEDAQLib download
+    #   sensor: auto                    # or one model, e.g. ILD5500, ILD1420, IFD2421
+    #   address: ""                     # optional: skip the search and open this IP address or COM port
 
 # Alert thresholds. These are the defaults; tune them with the real signal.
 detection:
   eval_interval_s: 0.25
-  baseline_s: 20                    # "normal" noise is learned from this much data
-  vibration_ratio: 4.0
-  noise_ratio: 2.5
-  drift_min_rate_per_min: 3.0       # µm per minute that counts as drift
-  invalid_min_share: 0.2
+  baseline_s: 20                    # the noise shown in the sensor tile is learned from this much data
+  invalid_min_share: 0.2            # share of invalid readings in one second that raises an alert

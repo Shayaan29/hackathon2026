@@ -1,11 +1,12 @@
 // The digital twin: a live 3D model of the measuring setup (three.js).
 //
-// A granite measuring table with a rotating machined part, an aluminium
-// gantry, and one laser triangulation sensor per configured sensor. Each laser
-// draws the real triangulation geometry: the emitted beam down to the part and
-// the reflected beam back to the receiver lens. Live readings move the laser
-// spots, alerts shake the gantry, and mission mode turns the lights down.
-import type { TwinSpot } from "../types";
+// A granite measuring table with a fixture plate, an aluminium gantry, and one
+// laser triangulation sensor per configured sensor. Each laser draws the real
+// triangulation geometry: the emitted beam down to the surface it measures and
+// the reflected beam back to the receiver lens. A faint band shows the sensor's
+// measuring range. Whatever lies on the plate appears as a block whose top is
+// the live reading: green for the taught part, red for a different one.
+// Mission mode turns the lights down.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -19,40 +20,47 @@ export type TwinState = "ok" | "warning" | "critical" | "invalid";
 
 export interface TwinSensor {
   id: string;
-  /** half of the tolerance band, used to scale the spot movement and the paint colour */
-  range: number;
-  nominal: number;
-  /** where the laser meets the turning part: angle around the axis and distance from it */
+  /** the limits in signal units (µm): for a sensor with a data sheet its measuring range, 0 to 10 000 for a -10 */
+  low: number;
+  high: number;
+  /** the extended measuring range around them, where the sensor still measures */
+  extLow?: number;
+  extHigh?: number;
+  /** where the sensor sits on the gantry: left (angle pi) or right of the middle, and how far out */
   angle: number;
   radius: number;
   /** model name from the configuration; the optoNCDT 5500 gets its own 3D model, all others a generic body */
   model?: string;
 }
 
+/** What the part check knows about the thing under a sensor. */
+export interface TwinPart {
+  state: "no_reference" | "waiting" | "match" | "different" | "empty";
+  /** the taught empty plate, in signal units; null when it was not taught */
+  emptyUm: number | null;
+}
+
 export interface TwinSource {
+  /** the latest reading in signal units (µm from the start of the measuring range), null without one */
   value(id: string): number | null;
   state(id: string): TwinState;
+  part(id: string): TwinPart | null;
   /** every new reading of a sensor since tMin, oldest first */
   forEachSince(id: string, tMin: number, fn: (t: number, v: number) => void): void;
-  /** the server's clock, so the part turns in step with the data */
+  /** the server's clock */
   now(): number;
 }
 
 export { trackFor } from "./tracks";
 
-const PART_R = 0.92;
-const PAINT = 512;
-const GREEN = [31, 185, 124];
-const AMBER = [255, 165, 31];
-const RED = [255, 49, 80];
-
-/** Paint colour for a deviation, as a share of the half tolerance band. */
-function deviationColor(share: number): string {
-  const mix = (a: number[], b: number[], k: number) => a.map((x, i) => Math.round(x + (b[i] - x) * k));
-  const c = share < 0.45 ? GREEN : share < 0.8 ? mix(GREEN, AMBER, (share - 0.45) / 0.35)
-    : share < 1 ? mix(AMBER, RED, (share - 0.8) / 0.2) : RED;
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
-}
+/** The part takes the colour of the part check's verdict. */
+const PART_COLOR: Record<TwinPart["state"], THREE.Color> = {
+  match: new THREE.Color("#1fb97c"),
+  different: new THREE.Color("#ff3150"),
+  waiting: new THREE.Color("#8d97a3"),
+  no_reference: new THREE.Color("#8d97a3"),
+  empty: new THREE.Color("#8d97a3"),
+};
 
 const STATE_COLOR: Record<TwinState, THREE.Color> = {
   ok: new THREE.Color("#6a52ff"),
@@ -71,14 +79,17 @@ const LOOK = {
 // lasers are drawn brighter than white so they, and only they, glow
 const HDR = 3.2;
 
-/** The incident spot takes the colour of its severity. */
-const SPOT_COLOR: Record<TwinSpot["severity"], string> = { info: "#8f80ff", warning: "#ffa51f", critical: "#ff3150" };
-
 const TABLE_TOP = 0.5;
-const PART_TOP = 0.95;
 const BEAM_Y = 2.0;
 const SENSOR_BOTTOM = BEAM_Y - 0.09 - 0.42;
-const SPOT_TRAVEL = 0.07; // scene units for a full half tolerance band
+// The measuring range is drawn from RANGE_TOP (its start, nearest the sensor) down to RANGE_BOTTOM (its end).
+// Heights are drawn larger than life, so that a part of a few millimetres is clearly visible.
+const RANGE_TOP = 1.22;
+const RANGE_BOTTOM = 0.68;
+/** a block thinner than this (in scene units) is the plate itself, not a part */
+const MIN_PART = 0.012;
+/** without a taught empty plate, the farthest surface of the last minutes counts as the plate */
+const PLATE_MEMORY_S = 120;
 
 function glowTexture(): THREE.Texture {
   const c = document.createElement("canvas");
@@ -128,11 +139,20 @@ interface SensorRig {
   reflected: Beam;
   spot: THREE.Sprite;
   led: THREE.MeshBasicMaterial;
-  ring: THREE.MeshBasicMaterial;
   emitter: THREE.Vector3;
   receiver: THREE.Vector3;
-  surface: THREE.Vector3;
-  shown: number; // smoothed spot offset
+  x: number;
+  /** the fixture plate under this sensor and the part on it */
+  plate: THREE.Mesh;
+  part: THREE.Mesh;
+  partMat: THREE.MeshStandardMaterial;
+  band: THREE.MeshBasicMaterial;
+  /** smoothed heights in scene units: the plate top and the measured surface */
+  plateY: number;
+  surfaceY: number;
+  /** the farthest reading of every second, for the plate when it was not taught */
+  farthest: Map<number, number>;
+  lastT: number;
   color: THREE.Color;
 }
 
@@ -147,8 +167,6 @@ export class Twin {
   private readonly gridMat: THREE.LineBasicMaterial;
   private readonly key: THREE.DirectionalLight;
   private readonly gantry = new THREE.Group();
-  private readonly part = new THREE.Group();
-  private readonly shock: THREE.Mesh;
   private readonly scan: THREE.Mesh;
   private readonly rigs: SensorRig[] = [];
   private readonly glow = glowTexture();
@@ -158,23 +176,11 @@ export class Twin {
   private darkFrom = 0;
   private darkTarget = 0;
   private darkAt = -10;
-  private knockAt = -10;
-  private knockAmp = 0;
-  private shockAt = -10;
   private scanAt = -10;
   private lastInteraction = -10;
   private readonly resize: ResizeObserver;
-  private paintCtx!: CanvasRenderingContext2D;
-  private paintTex!: THREE.CanvasTexture;
-  private readonly painted = new Map<string, { t: number; x: number; y: number }>();
-  /** part angle = omega * t + phase: the phase keeps the part where it is when its speed changes */
-  private phase = 0;
-  private spot: TwinSpot | null = null;
-  private spotDot!: THREE.Sprite;
-  private spotRing!: THREE.Mesh;
 
-  constructor(private readonly host: HTMLElement, sensors: TwinSensor[], private readonly source: TwinSource,
-              private omega = 0.9) {
+  constructor(private readonly host: HTMLElement, sensors: TwinSensor[], private readonly source: TwinSource) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     this.renderer.toneMapping = THREE.NeutralToneMapping;
@@ -229,15 +235,6 @@ export class Twin {
     this.scene.add(grid);
 
     this.buildMachine(sensors);
-    this.buildSpot();
-
-    // a ring that runs across the table when something knocks the fixture
-    this.shock = new THREE.Mesh(new THREE.RingGeometry(0.96, 1, 96),
-      new THREE.MeshBasicMaterial({ color: STATE_COLOR.warning, transparent: true, opacity: 0, toneMapped: false,
-        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }));
-    this.shock.rotation.x = -Math.PI / 2;
-    this.shock.position.y = TABLE_TOP + 0.005;
-    this.scene.add(this.shock);
 
     // the scan plane that sweeps the machine once when mission mode starts
     this.scan = new THREE.Mesh(new THREE.PlaneGeometry(6, 4),
@@ -261,7 +258,6 @@ export class Twin {
   private buildMachine(sensors: TwinSensor[]): void {
     const granite = new THREE.MeshStandardMaterial({ color: "#2b3038", roughness: 0.55, metalness: 0.05 });
     const aluminium = new THREE.MeshStandardMaterial({ color: "#c7ced6", roughness: 0.32, metalness: 0.75 });
-    const steel = new THREE.MeshStandardMaterial({ color: "#d9dde2", roughness: 0.18, metalness: 1.0 });
     const housing = new THREE.MeshStandardMaterial({ color: "#3b4149", roughness: 0.45, metalness: 0.4 });
 
     const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number,
@@ -279,37 +275,7 @@ export class Twin {
       add(new THREE.CylinderGeometry(0.07, 0.09, 0.08, 16), housing, x, 0.04, z);
     }
 
-    // spindle and the machined part it turns
-    add(new THREE.CylinderGeometry(0.16, 0.2, 0.15, 32), housing, 0, TABLE_TOP + 0.075, 0);
-    this.part.position.set(0, TABLE_TOP + 0.15, 0);
-    this.scene.add(this.part);
-    add(new THREE.CylinderGeometry(0.92, 0.92, PART_TOP - TABLE_TOP - 0.15, 96), steel, 0,
-      (PART_TOP - TABLE_TOP - 0.15) / 2, 0, this.part);
-    // turned grooves and a key slot make the rotation visible
-    for (const r of [0.35, 0.62, 0.84]) {
-      const groove = new THREE.Mesh(new THREE.TorusGeometry(r, 0.004, 6, 96),
-        new THREE.MeshStandardMaterial({ color: "#8d949c", roughness: 0.4, metalness: 1 }));
-      groove.rotation.x = Math.PI / 2;
-      groove.position.y = PART_TOP - TABLE_TOP - 0.15 + 0.001;
-      this.part.add(groove);
-    }
-    add(new THREE.BoxGeometry(0.22, 0.02, 0.06), housing, 0.75, PART_TOP - TABLE_TOP - 0.15 + 0.004, 0, this.part);
-
-    // the lasers paint what they measure onto the part, so a defect shows where it sits
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = PAINT;
-    this.paintCtx = canvas.getContext("2d")!;
-    this.paintCtx.lineCap = "round";
-    this.paintTex = new THREE.CanvasTexture(canvas);
-    this.paintTex.colorSpace = THREE.SRGBColorSpace;
-    this.paintTex.anisotropy = 4;
-    const paintDisc = new THREE.Mesh(new THREE.CircleGeometry(PART_R - 0.004, 128),
-      new THREE.MeshBasicMaterial({ map: this.paintTex, transparent: true, depthWrite: false, toneMapped: false }));
-    paintDisc.rotation.x = -Math.PI / 2;
-    paintDisc.position.y = PART_TOP - TABLE_TOP - 0.15 + 0.005;
-    this.part.add(paintDisc);
-
-    // gantry: two posts and a crossbeam, all of it moves when knocked
+    // gantry: two posts and a crossbeam
     this.scene.add(this.gantry);
     add(new THREE.BoxGeometry(0.2, BEAM_Y - TABLE_TOP + 0.1, 0.24), aluminium, -1.45, (BEAM_Y + TABLE_TOP) / 2, 0, this.gantry);
     add(new THREE.BoxGeometry(0.2, BEAM_Y - TABLE_TOP + 0.1, 0.24), aluminium, 1.45, (BEAM_Y + TABLE_TOP) / 2, 0, this.gantry);
@@ -364,14 +330,29 @@ export class Twin {
       spot.scale.setScalar(0.16);
       this.scene.add(spot);
 
-      // faint guide for the circle this laser traces on the turning part
-      const ring = new THREE.MeshBasicMaterial({ color: "#8a94a3", transparent: true, opacity: 0.25, toneMapped: false,
+      // the measuring range: a faint band from its start down to its end, where the readings are valid
+      const band = new THREE.MeshBasicMaterial({ color: "#6a52ff", transparent: true, opacity: 0.07, toneMapped: false,
         side: THREE.DoubleSide, depthWrite: false });
-      const radius = cfg.radius;
-      const ringMesh = new THREE.Mesh(new THREE.RingGeometry(radius - 0.004, radius + 0.004, 128), ring);
-      ringMesh.rotation.x = -Math.PI / 2;
-      ringMesh.position.y = PART_TOP + 0.003;
-      this.scene.add(ringMesh);
+      const bandMesh = new THREE.Mesh(new THREE.BoxGeometry(0.5, RANGE_TOP - RANGE_BOTTOM, 0.36), band);
+      bandMesh.position.set(x, (RANGE_TOP + RANGE_BOTTOM) / 2, 0);
+      this.scene.add(bandMesh);
+      for (const y of [RANGE_TOP, RANGE_BOTTOM]) {
+        const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(0.5, 0.36)),
+          new THREE.LineBasicMaterial({ color: "#6a52ff", transparent: true, opacity: 0.35, toneMapped: false }));
+        edge.rotation.x = -Math.PI / 2;
+        edge.position.set(x, y, 0);
+        this.scene.add(edge);
+      }
+
+      // the fixture plate on the table, and the part on it (both unit boxes, scaled every frame)
+      const plate = add(new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshStandardMaterial({ color: "#9aa3ad", roughness: 0.35, metalness: 0.85 }), x, TABLE_TOP, 0);
+      plate.scale.set(1.4, 0.001, 0.9);
+      const partMat = new THREE.MeshStandardMaterial({ color: PART_COLOR.waiting, roughness: 0.3, metalness: 0.55,
+        emissive: new THREE.Color("#000000") });
+      const part = add(new THREE.BoxGeometry(1, 1, 1), partMat, x, TABLE_TOP, 0);
+      part.scale.set(0.46, 0.001, 0.3);
+      part.visible = false;
 
       // sensor cable, routed up over the beam and down the nearest post
       const side = x < 0 ? -1 : 1;
@@ -385,11 +366,12 @@ export class Twin {
         new THREE.MeshStandardMaterial({ color: "#1c2027", roughness: 0.7 }), 0, 0, 0, this.gantry);
 
       this.rigs.push({
-        cfg, anchor, emitted, reflected, spot, led, ring,
+        cfg, anchor, emitted, reflected, spot, led,
         emitter: new THREE.Vector3(x, SENSOR_BOTTOM, 0),
         receiver: new THREE.Vector3(x + baseline, SENSOR_BOTTOM, 0),
-        surface: new THREE.Vector3(x, PART_TOP, 0),
-        shown: 0,
+        x, plate, part, partMat, band,
+        plateY: RANGE_BOTTOM, surfaceY: RANGE_BOTTOM,
+        farthest: new Map(), lastT: 0,
         color: STATE_COLOR.ok.clone(),
       });
     });
@@ -407,29 +389,11 @@ export class Twin {
     });
   }
 
-  /** Screen position (CSS pixels inside the host) of the incident spot, or null when it is not on the part. */
-  spotPosition(): { x: number; y: number; visible: boolean } | null {
-    if (!this.spotDot.visible) return null;
-    const w = this.host.clientWidth;
-    const h = this.host.clientHeight;
-    const v = new THREE.Vector3();
-    this.spotDot.getWorldPosition(v);
-    v.project(this.camera);
-    return { x: (v.x * 0.5 + 0.5) * w, y: (-v.y * 0.5 + 0.5) * h, visible: v.z < 1 };
-  }
-
   setMission(on: boolean): void {
     this.darkFrom = this.dark;
     this.darkTarget = on ? 1 : 0;
     this.darkAt = this.clock.elapsedTime;
     if (on) this.scanAt = this.clock.elapsedTime + 0.4;
-  }
-
-  /** Something hit the fixture: the gantry rings and a shock ring runs over the table. */
-  knock(intensity = 1): void {
-    this.knockAt = this.clock.elapsedTime;
-    this.knockAmp = Math.min(0.012 + 0.018 * intensity, 0.06);
-    this.shockAt = this.clock.elapsedTime;
   }
 
   private fit(): void {
@@ -474,45 +438,48 @@ export class Twin {
       scanMat.opacity = 0;
     }
 
-    // the part turns in step with the data; auto-rotation of the camera resumes after a pause
-    this.part.rotation.y = (this.omega * this.source.now() + this.phase) % (2 * Math.PI);
-    this.paintTrail(dt);
+    // auto-rotation of the camera resumes after a pause
     if (!this.controls.autoRotate && t - this.lastInteraction > 6) this.controls.autoRotate = true;
 
-    // knock: damped ringing of the gantry, plus the shock ring
-    const since = t - this.knockAt;
-    const ringing = since < 1.6 ? this.knockAmp * Math.exp(-since * 3.2) * Math.sin(since * 2 * Math.PI * 7.5) : 0;
-    this.gantry.position.x = ringing;
-    this.gantry.rotation.z = ringing * 0.35;
-    const shockT = (t - this.shockAt) / 1.1;
-    const shockMat = this.shock.material as THREE.MeshBasicMaterial;
-    if (shockT >= 0 && shockT <= 1) {
-      this.shock.scale.setScalar(0.2 + 2.4 * shockT);
-      shockMat.opacity = 0.85 * (1 - shockT);
-    } else {
-      shockMat.opacity = 0;
-    }
-
-    // lasers follow the live readings
+    // the plate, the part on it and the lasers follow the live readings
     for (const rig of this.rigs) {
-      const state = this.source.state(rig.cfg.id);
-      const value = this.source.value(rig.cfg.id);
-      const target = value === null || !Number.isFinite(value) ? 0 : THREE.MathUtils.clamp(value / rig.cfg.range, -1.6, 1.6);
-      rig.shown += (target - rig.shown) * Math.min(dt * 12, 1);
-      rig.color.lerp(STATE_COLOR[state], Math.min(dt * 6, 1));
-      const offset = rig.shown * SPOT_TRAVEL;
+      const id = rig.cfg.id;
+      const state = this.source.state(id);
+      const value = this.source.value(id);
       const lost = value === null || !Number.isFinite(value);
+      const part = this.source.part(id);
+      rig.color.lerp(STATE_COLOR[state], Math.min(dt * 6, 1));
       const flicker = state === "invalid" ? (Math.sin(t * 40) > 0 ? 1 : 0.05) : 1;
 
-      const emitter = rig.emitter.clone().add(new THREE.Vector3(ringing, 0, 0));
-      const receiver = rig.receiver.clone().add(new THREE.Vector3(ringing, 0, 0));
-      const surface = rig.surface.clone();
-      surface.y = PART_TOP - offset;
-      surface.x += ringing * 0.4;
-      rig.emitted.set(emitter, surface);
-      rig.reflected.set(surface, receiver);
+      // the plate: where the empty plate was taught, otherwise the farthest surface of the last minutes
+      const plateUm = part?.emptyUm ?? this.farthest(rig);
+      const plateTarget = this.yOf(rig.cfg, plateUm ?? rig.cfg.extHigh ?? rig.cfg.high);
+      rig.plateY += (plateTarget - rig.plateY) * Math.min(dt * 4, 1);
+      // the surface the laser meets: the part's top, never below the plate
+      const surfaceTarget = lost ? rig.plateY : Math.max(this.yOf(rig.cfg, value), rig.plateY);
+      rig.surfaceY += (surfaceTarget - rig.surfaceY) * Math.min(dt * 10, 1);
+
+      const plateH = Math.max(rig.plateY - TABLE_TOP, 0.001);
+      rig.plate.scale.y = plateH;
+      rig.plate.position.y = TABLE_TOP + plateH / 2;
+      const partH = rig.surfaceY - rig.plateY;
+      rig.part.visible = !lost && partH > MIN_PART && part?.state !== "empty";
+      if (rig.part.visible) {
+        rig.part.scale.y = partH;
+        rig.part.position.y = rig.plateY + partH / 2;
+      }
+      const verdict = part?.state ?? "waiting";
+      rig.partMat.color.lerp(PART_COLOR[verdict], Math.min(dt * 6, 1));
+      const alarm = verdict === "different" ? 0.25 + 0.2 * Math.sin(t * 6) : 0;
+      rig.partMat.emissive.copy(PART_COLOR.different).multiplyScalar(alarm + 0.15 * k * (verdict === "match" ? 0 : 1));
+      if (verdict === "match") rig.partMat.emissive.copy(PART_COLOR.match).multiplyScalar(0.25 * k);
+      rig.band.opacity = 0.06 + 0.08 * k;
+
+      const surface = new THREE.Vector3(rig.x, rig.surfaceY, 0);
+      rig.emitted.set(rig.emitter, surface);
+      rig.reflected.set(surface, rig.receiver);
       for (const beam of [rig.emitted, rig.reflected]) {
-          beam.coreMat.color.copy(rig.color).multiplyScalar(HDR);
+        beam.coreMat.color.copy(rig.color).multiplyScalar(HDR);
         beam.haloMat.color.copy(rig.color).multiplyScalar(1.4);
         beam.coreMat.opacity = (lost ? 0.25 : 1) * flicker;
       }
@@ -523,112 +490,49 @@ export class Twin {
       rig.spot.material.opacity = flicker;
       rig.spot.scale.setScalar(0.13 + 0.06 * glow + (state === "ok" ? 0 : 0.04 * Math.sin(t * 10)));
       rig.led.color.copy(rig.color).multiplyScalar(HDR);
-      // with no part speed the spot cannot be placed on the part: the sensor's own ring marks the incident
-      const focus = this.spot !== null && this.spot.sensor === rig.cfg.id && !this.spot.partRpm;
-      rig.ring.color.set(focus ? SPOT_COLOR[this.spot?.severity ?? "info"] : "#8a94a3");
-      rig.ring.opacity = focus ? 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 5)) : 0.18 + 0.15 * glow;
     }
-    this.updateSpot(t);
 
     this.controls.update();
     this.composer.render(dt);
   };
 
-  /** Paint new readings onto the part at the spot the laser saw them; old paint fades over a few turns. */
-  private paintTrail(dt: number): void {
-    const ctx = this.paintCtx;
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.fillStyle = `rgba(0,0,0,${1 - Math.exp(-dt / 28)})`;
-    ctx.fillRect(0, 0, PAINT, PAINT);
-    ctx.globalCompositeOperation = "source-over";
-    if (this.omega <= 0) return;
+  /** Height in the scene of a reading: the start of the measuring range is at the top, its end at the bottom. */
+  private yOf(cfg: TwinSensor, value: number): number {
+    const share = (value - cfg.low) / (cfg.high - cfg.low || 1);
+    return THREE.MathUtils.clamp(RANGE_TOP - share * (RANGE_TOP - RANGE_BOTTOM), TABLE_TOP + 0.002, SENSOR_BOTTOM - 0.03);
+  }
+
+  /**
+   * The farthest surface of the last minutes: with no empty plate taught, that is the plate. Each second counts
+   * with its median, so the edge of a part sliding in does not count as a surface.
+   */
+  private farthest(rig: SensorRig): number | null {
     const now = this.source.now();
-    for (const rig of this.rigs) {
-      const { id, angle, radius, nominal, range } = rig.cfg;
-      const last = this.painted.get(id);
-      this.source.forEachSince(id, last ? last.t + 1e-6 : now - 0.4, (t, v) => {
-        const phi = angle - this.omega * t - this.phase;
-        const x = ((radius * Math.cos(phi)) / (2 * PART_R) + 0.5) * PAINT;
-        const y = (1 - ((radius * Math.sin(phi)) / (2 * PART_R) + 0.5)) * PAINT;
-        const prev = this.painted.get(id);
-        if (Number.isFinite(v)) {
-          ctx.strokeStyle = deviationColor(Math.abs(v - nominal) / range);
-          ctx.lineWidth = 9 + 9 * Math.min(Math.abs(v - nominal) / range, 1.2);
-          ctx.beginPath();
-          if (prev && Number.isFinite(prev.x) && t - prev.t < 0.4) ctx.moveTo(prev.x, prev.y);
-          else ctx.moveTo(x, y);
-          ctx.lineTo(x, y);
-          ctx.stroke();
-          this.painted.set(id, { t, x, y });
-        } else {
-          this.painted.set(id, { t, x: Number.NaN, y: Number.NaN }); // no reading: leave a gap
-        }
-      });
+    let second = -1;
+    let values: number[] = [];
+    const close = () => {
+      if (second < 0 || values.length < 3) return;
+      values.sort((a, b) => a - b);
+      rig.farthest.set(second, values[Math.floor(values.length / 2)]);
+    };
+    const from = rig.lastT > 0 ? Math.floor(rig.lastT) : now - PLATE_MEMORY_S;
+    this.source.forEachSince(rig.cfg.id, from, (t, v) => {
+      const s = Math.floor(t);
+      if (s !== second) {
+        close();
+        second = s;
+        values = [];
+      }
+      if (Number.isFinite(v)) values.push(v);
+      rig.lastT = t;
+    });
+    // the second still running is left open: it is read again next frame
+    let best: number | null = null;
+    for (const [s, v] of rig.farthest) {
+      if (s < now - PLATE_MEMORY_S) rig.farthest.delete(s);
+      else if (best === null || v > best) best = v;
     }
-    this.paintTex.needsUpdate = true;
-  }
-
-  /** Changes the part's speed. The part stays where it is; paint from the old speed is wiped. */
-  setOmega(omega: number): void {
-    if (Math.abs(omega - this.omega) < 1e-9) return;
-    this.phase = this.part.rotation.y - omega * this.source.now();
-    this.omega = omega;
-    this.painted.clear();
-    this.paintCtx.clearRect(0, 0, PAINT, PAINT);
-    this.paintTex.needsUpdate = true;
-  }
-
-  /**
-   * The incident spot. With a known part speed it sits on the part, at the point the
-   * laser measured; without one it stays hidden and the sensor's ring marks the incident.
-   */
-  setSpot(spot: TwinSpot | null): void {
-    this.spot = spot;
-    const color = SPOT_COLOR[spot?.severity ?? "info"];
-    (this.spotDot.material as THREE.SpriteMaterial).color.set(color).multiplyScalar(HDR);
-    (this.spotRing.material as THREE.MeshBasicMaterial).color.set(color).multiplyScalar(HDR);
-    const placed = Boolean(spot?.partRpm);
-    this.spotDot.visible = placed;
-    this.spotRing.visible = placed;
-  }
-
-  private buildSpot(): void {
-    this.spotDot = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.glow, color: SPOT_COLOR.info,
-      toneMapped: false, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
-    this.spotDot.scale.setScalar(0.22);
-    this.spotDot.visible = false;
-    this.part.add(this.spotDot);
-
-    this.spotRing = new THREE.Mesh(new THREE.RingGeometry(0.03, 0.04, 48),
-      new THREE.MeshBasicMaterial({ color: SPOT_COLOR.info, transparent: true, opacity: 0.9, toneMapped: false,
-        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }));
-    this.spotRing.rotation.x = -Math.PI / 2;
-    this.spotRing.visible = false;
-    this.part.add(this.spotRing);
-  }
-
-  /**
-   * Places the spot where the paint of the peak was laid: on the newest pass of the peak
-   * that playback has reached (the recording loops). The part turns under it, so it stays
-   * on that point of the part, and it sits under the laser at the moment of the pass.
-   */
-  private updateSpot(t: number): void {
-    const spot = this.spot;
-    const rig = spot ? this.rigs.find((r) => r.cfg.id === spot.sensor) : undefined;
-    if (!spot || !rig || !spot.partRpm || !spot.duration) return;
-    const now = this.source.now();
-    const passes = Math.max(0, Math.floor((now - spot.origin - spot.t) / spot.duration));
-    const measuredAt = spot.origin + passes * spot.duration + spot.t;
-    const phi = rig.cfg.angle - this.omega * measuredAt - this.phase;
-    const x = rig.cfg.radius * Math.cos(phi);
-    const z = -rig.cfg.radius * Math.sin(phi);
-    const y = PART_TOP - TABLE_TOP - 0.15 + 0.012; // just above the paint on the top surface
-    this.spotDot.position.set(x, y, z);
-    this.spotRing.position.set(x, y, z);
-    const pulse = 0.5 + 0.5 * Math.sin(t * 5);
-    this.spotDot.scale.setScalar(0.2 + 0.06 * pulse);
-    this.spotRing.scale.setScalar(1 + 1.4 * pulse);
-    (this.spotRing.material as THREE.MeshBasicMaterial).opacity = 0.95 - 0.55 * pulse;
+    return best;
   }
 
   dispose(): void {

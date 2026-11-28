@@ -1,4 +1,4 @@
-// Live readouts under the twin: value, a go/no-go gauge, noise and setup hint.
+// Live readouts under the twin: value, a go/no-go gauge, noise and the part check.
 import { useEffect, useRef } from "react";
 import { controller } from "../controller";
 import { KIND_LABEL, num, signed } from "../lib/format";
@@ -53,7 +53,6 @@ function Readout({ sensor, register }: {
   register: (id: string, els: Els | null) => void;
 }) {
   const status = useStore((s) => s.status?.sensors[sensor.id]);
-  const hint = useStore((s) => s.hints[sensor.id]);
   const valueRef = useRef<HTMLSpanElement>(null);
   const needleRef = useRef<HTMLSpanElement>(null);
   const zoneRef = useRef<HTMLSpanElement>(null);
@@ -71,6 +70,7 @@ function Readout({ sensor, register }: {
   const active = status?.active ?? [];
   const live = status?.live;
   const part = status?.part;
+  const station = status?.station;
 
   return (
     <div className={`readout readout-${state}`}>
@@ -96,7 +96,6 @@ function Readout({ sensor, register }: {
       <div className="readout-foot">
         {ext && <span className="readout-zone" ref={zoneRef} data-zone="standard">{ZONE_WORDS.standard}</span>}
         <span>noise {num(status?.noise ?? null, 2)} {sensor.unit}</span>
-        {status?.settings?.averaging !== undefined && <span>averaging {String(status.settings.averaging)}</span>}
         {active.length > 0 && <span className="readout-active">{active.map((k) => KIND_LABEL[k]).join(", ")}</span>}
       </div>
       {live && <LiveLine live={live} />}
@@ -106,14 +105,14 @@ function Readout({ sensor, register }: {
           {PART_CHIP[part.state]}{part.state !== "no_reference" && !part.steady ? " …" : ""}
         </button>
       )}
-      {hint === "improve" && (
-        <button className="readout-hint" onClick={() => controller.openAssistant(sensor.id)}>
-          Setup can be better. Check it
-        </button>
-      )}
-      {hint === "advice" && (
-        <button className="readout-hint" onClick={() => controller.openAssistant(sensor.id)}>
-          The setup check has advice
+      {station && (station.ready || station.parts > 0) && (
+        <button className="readout-station" onClick={() => controller.openParts(sensor.id)}
+          title="The quality station: every part, its height and verdict">
+          <b key={station.parts} className="station-count">{station.parts}</b>
+          <span>{station.parts === 1 ? "part" : "parts"}</span>
+          <span className="station-good">{station.good} good</span>
+          <span className={station.different ? "station-bad" : ""}>{station.different} different</span>
+          {station.current && <span className="station-now">part {station.current.number} under the sensor</span>}
         </button>
       )}
     </div>
