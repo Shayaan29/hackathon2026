@@ -320,3 +320,17 @@ def test_teaching_the_empty_plate_where_the_part_was_taught_is_refused(line):
     line.check.learn(line.sid, line.buf, "part")                  # the mix-up: the plate taught as the part
     with pytest.raises(PartCheckError, match="Forget what was taught"):
         line.check.learn(line.sid, line.buf, "empty")
+
+
+def test_without_a_visible_plate_no_reading_stands_for_the_empty_plate(line):
+    nothing = float("nan")                                   # the plate is outside the measuring range
+    line.hold(nothing, 1.0)
+    line.hold(PART, 2.0)
+    line.check.learn(line.sid, line.buf, "part")
+    line.hold(nothing, 1.0)
+    line.part(PART, 2.0, 0)
+    line.hold(nothing, 1.0)
+    line.part(OTHER, 2.0, 0)
+    line.hold(nothing, 1.0)
+    assert [r.verdict for r in line.records] == ["good", "good", "different"]
+    assert line.records[1].height_um is None
