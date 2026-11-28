@@ -119,6 +119,7 @@ export function PartsPanel() {
                 <button className="solid-btn" onClick={() => chart("parts")}>Height of every part</button>
                 <button className="btn" onClick={() => chart("part_counts")}>Bar chart</button>
                 <button className="btn" onClick={() => chart("part_heights")}>Height spread</button>
+                <button className="btn" onClick={() => patch({ partsFor: null, reportId: `run:${sensor}` })}>Run report and QR</button>
                 <a className="btn" href={api.partsCsvUrl(sensor)} download>Download for Excel</a>
                 {!confirm && <button className="quiet-btn" onClick={() => setConfirm(true)}>New run</button>}
                 {confirm && (

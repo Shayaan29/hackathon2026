@@ -523,3 +523,8 @@ button { cursor: pointer; }
   .report-body { grid-template-columns: 1fr; }
   .report-take { display: none; }
 }
+
+/* the part check steps: done ones are ticked */
+.part-steps { padding-left: 20px; }
+.part-steps li.is-done { color: var(--go); }
+.part-steps li.is-done::marker { content: "✓  "; }

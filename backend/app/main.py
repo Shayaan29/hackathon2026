@@ -241,6 +241,11 @@ def create_app(settings: Settings | None = None,
         except report.ReportError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/run-report/{sensor}", include_in_schema=False)
+    def run_report_page(sensor: str, embed: bool = False) -> HTMLResponse:
+        """Every part and every alert of the current run of the quality station, one page."""
+        return HTMLResponse(report.render_run_html(engine, sensor_or_400(sensor), embed=embed))
+
     @app.get("/report/{event_id}", include_in_schema=False)
     def report_page(event_id: str, embed: bool = False) -> HTMLResponse:
         try:

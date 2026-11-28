@@ -203,6 +203,10 @@ class PartCheck:
             raise PartCheckError("Teach either the part or the empty plate.")
         reading = measure(buf, LEARN_WINDOW_S)
         if reading.position_um is None or reading.valid_share < MIN_VALID_SHARE:
+            if kind == "empty":
+                raise PartCheckError("With nothing under it the sensor has no valid reading: the plate is outside the "
+                                     "measuring range. You do not need to teach it then: taking a part away is no "
+                                     "alert, because nothing valid is measured.")
             raise PartCheckError("The sensor has no valid reading. Put the part in the laser spot and try again.")
         if reading.spread_um > STEADY_SPREAD_UM:
             raise PartCheckError("The reading is not steady yet. Hold the part still under the sensor for a "
@@ -210,6 +214,18 @@ class PartCheck:
         now = time.time() if now is None else now
         with self._lock:
             track = self.tracks[sid]
+            cfg = self.sensors[sid]
+            ref = track.reference
+            # the two mix-ups that make every good part a "different part": catch them here
+            if kind == "part" and track.empty_um is not None \
+                    and abs(reading.position_um - track.empty_um) <= self.empty_band(track):
+                raise PartCheckError(f"This reads {cfg.pos(reading.position_um, signed=False)}, the same as the empty "
+                                     "plate. Put the part in the laser spot (the red dot), then press the button again.")
+            if kind == "empty" and ref is not None \
+                    and abs(reading.position_um - ref.center_um) <= ref.half_width_um:
+                raise PartCheckError(f"This reads {cfg.pos(reading.position_um, signed=False)}, the same as the taught "
+                                     "part, so the part was probably taught on the empty plate. Press Forget what was "
+                                     "taught, teach the empty plate, then put the part in the laser spot and teach it.")
             if kind == "empty":
                 track.empty_um = reading.position_um
                 track.state, track.since, track.pending = "empty", now, None

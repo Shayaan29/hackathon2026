@@ -562,6 +562,11 @@ class Controller {
     const config = store().config;
     if (!config) return;
     const lower = text.toLowerCase();
+    if (/\b(run report|report (of|on|for) (the|this) run|summary of the run|all parts report|laufbericht)\b/.test(lower)) {
+      store().patch({ reportId: `run:${this.resolveSensor(this.lastSensor ?? this.firstSensor())}`, partsFor: null, partFor: null });
+      this.say("Here is the report of this run: every part and every alert. Scan the code to take it along.");
+      return;
+    }
     if (/\b(report|bericht|ticket)\b/.test(lower)) {
       const result = await api.createReport();
       if (!result.ok) this.say(result.error ?? "There is no alert to report yet.");

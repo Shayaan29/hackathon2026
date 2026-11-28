@@ -115,20 +115,25 @@ export function PartCheckPanel() {
                 {icon && <Icon name={icon} />} {part.message}
               </p>
 
-              <ul className="assist-reasons">
-                <li>Hold one good part still under the laser and press <b>Teach this part</b>. The cockpit remembers where its top surface is.</li>
-                <li>Anything else that stays under the sensor for about half a second raises <b>Different part detected</b>. A part that is still sliding in, or a lost target, does not.</li>
-                <li>Teach the <b>empty plate</b> too, so that taking a part away is no alert. With a second good part, press <b>Add another good part</b> so the accepted band follows the real spread of your parts.</li>
-                <li>The sensor sees the height of the top surface only. Two parts with the same height look the same to it.</li>
-              </ul>
+              <ol className="assist-reasons part-steps">
+                <li className={part.empty_um !== null ? "is-done" : ""}>Nothing under the sensor: press <b>Teach the empty plate</b>.</li>
+                <li className={taught ? "is-done" : ""}>Put one good part <b>in the laser spot</b> (the red dot must be on the part, not beside it), hold it still, press <b>Teach this part</b>.</li>
+                <li>Put the same part down two or three more times and press <b>Add another good part</b> each time: the band then covers how much your hand placement varies.</li>
+                <li>Anything else that rests under the sensor for half a second raises <b>Different part detected</b>. The sensor sees the height of the top surface only.</li>
+              </ol>
 
               <div className="part-actions">
-                {!taught && <button className="solid-btn" disabled={busy} onClick={() => void learn("part")()}>Teach this part</button>}
+                {!taught && part.empty_um === null && (
+                  <button className="solid-btn" disabled={busy} onClick={() => void learn("empty")()}>Teach the empty plate</button>
+                )}
+                {!taught && <button className={part.empty_um === null ? "btn" : "solid-btn"} disabled={busy} onClick={() => void learn("part")()}>Teach this part</button>}
                 {taught && <button className="solid-btn" disabled={busy} onClick={() => void learn("part", true)()}>Add another good part</button>}
                 {taught && <button className="btn" disabled={busy} onClick={() => void learn("part")()}>Start again with this part</button>}
-                <button className="btn" disabled={busy} onClick={() => void learn("empty")()}>
-                  {part.empty_um === null ? "Teach the empty plate" : "Teach the empty plate again"}
-                </button>
+                {(taught || part.empty_um !== null) && (
+                  <button className="btn" disabled={busy} onClick={() => void learn("empty")()}>
+                    {part.empty_um === null ? "Teach the empty plate" : "Teach the empty plate again"}
+                  </button>
+                )}
                 {(taught || part.empty_um !== null) && (
                   <button className="quiet-btn" disabled={busy}
                     onClick={() => void run("Everything forgotten.", () => api.partForget(sensor, "all"))}>
@@ -145,6 +150,12 @@ export function PartCheckPanel() {
                     onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} />
                   <span>{shown.unit}</span>
                 </label>
+              )}
+              {taught && part.reference && part.reference.margin_um < 50 && (
+                <p className="assist-error">
+                  ± {(part.reference.margin_um * scale).toFixed(decimals)} {shown.unit} is very tight: the same part put down again
+                  by hand often reads 0.02 to 0.05 mm differently, and is then flagged as different. 0.10 mm is a good start.
+                </p>
               )}
               {note && !error && <p className="assist-note">{note}</p>}
               {error && <p className="assist-error part-error">{error}</p>}

@@ -294,3 +294,29 @@ def test_a_report_on_a_jam_shows_the_heights_of_the_last_parts(client):
     assert any("stuck" in c for c in rep["causes"])
     html = client.get(f"/report/{jam.id}").text
     assert "part number" in html and "Time under the sensor" in html
+
+
+def test_the_run_report_lists_every_part_and_alert(client):
+    engine = client.app.state.engine
+    run_line(engine, "s1", [(PART, 2.0), (OTHER, 2.0)])
+    page = client.get("/run-report/s1")
+    assert page.status_code == 200
+    assert "Quality station" in page.text and "different part" in page.text and "Different part" in page.text
+    assert page.text.count("<tr class='good'>") == 2 and page.text.count("<tr class='different'>") == 1
+    assert client.get("/run-report/nope").status_code in (400, 404)
+
+
+def test_teaching_the_plate_as_the_part_is_refused(line):
+    from app.partcheck import PartCheckError
+    line.hold(PLATE, 2.0)
+    line.check.learn(line.sid, line.buf, "empty")
+    with pytest.raises(PartCheckError, match="empty plate"):
+        line.check.learn(line.sid, line.buf, "part")              # nothing in the laser spot
+
+
+def test_teaching_the_empty_plate_where_the_part_was_taught_is_refused(line):
+    from app.partcheck import PartCheckError
+    line.hold(PLATE, 2.0)
+    line.check.learn(line.sid, line.buf, "part")                  # the mix-up: the plate taught as the part
+    with pytest.raises(PartCheckError, match="Forget what was taught"):
+        line.check.learn(line.sid, line.buf, "empty")
